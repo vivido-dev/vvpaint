@@ -32,9 +32,7 @@ impl Session {
             "build the sibling Vivido debug binary first"
         );
 
-        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("headless-runtime-{}", std::process::id()));
+        let runtime = std::env::temp_dir().join(format!("vvpaint-headless-{}", std::process::id()));
         let _ = fs::remove_dir_all(&runtime);
         fs::create_dir_all(&runtime).expect("create private headless runtime");
 
@@ -71,7 +69,7 @@ impl Session {
             runtime,
             socket,
         };
-        session.wait_for_text("f:freehand");
+        session.wait_for_text("Pencil");
         session
     }
 
@@ -153,9 +151,54 @@ fn draws_resizes_presents_and_exports() {
     let _ = fs::remove_file(&export);
     let session = Session::start(&export);
 
-    session.checked_msg(&["mouse", "down", "--x", "60", "--y", "60"]);
-    session.checked_msg(&["mouse", "drag", "--x", "260", "--y", "180"]);
-    session.checked_msg(&["mouse", "up", "--x", "260", "--y", "180"]);
+    // Select Brush from the first toolbar row and bright red from the second palette row. UI
+    // routing converts these stable grid cells through Vivido's normal pixel-mode input path.
+    session.checked_msg(&[
+        "mouse",
+        "down",
+        "--cell-column",
+        "12",
+        "--cell-row",
+        "26",
+        "--route",
+        "ui",
+    ]);
+    session.checked_msg(&[
+        "mouse",
+        "up",
+        "--cell-column",
+        "12",
+        "--cell-row",
+        "26",
+        "--route",
+        "ui",
+    ]);
+    session.wait_for_text("Brush");
+    session.checked_msg(&[
+        "mouse",
+        "down",
+        "--cell-column",
+        "35",
+        "--cell-row",
+        "27",
+        "--route",
+        "ui",
+    ]);
+    session.checked_msg(&[
+        "mouse",
+        "up",
+        "--cell-column",
+        "35",
+        "--cell-row",
+        "27",
+        "--route",
+        "ui",
+    ]);
+    session.wait_for_text("Primary color: red");
+
+    session.checked_msg(&["mouse", "down", "--x", "60", "--y", "60", "--route", "ui"]);
+    session.checked_msg(&["mouse", "drag", "--x", "260", "--y", "180", "--route", "ui"]);
+    session.checked_msg(&["mouse", "up", "--x", "260", "--y", "180", "--route", "ui"]);
     session.checked_msg(&["resize", "--width", "900", "--height", "600"]);
     thread::sleep(Duration::from_millis(750));
 

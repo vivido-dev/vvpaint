@@ -12,7 +12,7 @@ use crossterm::{
         MouseEvent, MouseEventKind,
     },
     queue,
-    style::{Color, Print, ResetColor, SetBackgroundColor},
+    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal::{Clear, ClearType},
 };
 use image::Rgba;
@@ -32,7 +32,7 @@ struct State {
     previous_tool: Tool,
     primary: Rgba<u8>,
     secondary: Rgba<u8>,
-    width: WidthPreset,
+    widths: [WidthPreset; Tool::COUNT],
     input: InputMode,
     message: String,
     format: ExportFormat,
@@ -62,11 +62,11 @@ enum ColorTarget {
 impl State {
     fn new(canvas: &DrawingCanvas, format: ExportFormat, export_size: ExportSize) -> Self {
         Self {
-            tool: Tool::Freehand,
-            previous_tool: Tool::Freehand,
+            tool: Tool::Pencil,
+            previous_tool: Tool::Pencil,
             primary: canvas.default_primary(),
             secondary: canvas.default_secondary(),
-            width: WidthPreset::Medium,
+            widths: [WidthPreset::Medium; Tool::COUNT],
             input: InputMode::None,
             message: "Ready".into(),
             format,
@@ -86,15 +86,25 @@ impl State {
 
     fn style(&self, button: MouseButton) -> Style {
         let color = match self.tool {
-            Tool::Redaction => Rgba([0, 0, 0, 255]),
             Tool::Eraser => self.secondary,
             _ if button == MouseButton::Right => self.secondary,
             _ => self.primary,
         };
         if self.tool == Tool::Highlighter {
-            Style::highlighter(color, self.width)
+            Style::highlighter(color, self.width())
         } else {
-            Style::opaque(color, self.width)
+            Style::opaque(color, self.width())
+        }
+    }
+
+    fn width(&self) -> WidthPreset {
+        self.widths[self.tool.index()]
+    }
+
+    fn set_width(&mut self, width: WidthPreset) {
+        if self.tool.supports_width() {
+            self.widths[self.tool.index()] = width;
+            self.message = format!("{} width: {}", tool_label(self.tool), width.label());
         }
     }
 
@@ -120,42 +130,118 @@ struct PaletteColor {
     name: &'static str,
     color: Rgba<u8>,
 }
-const PALETTE: [PaletteColor; 9] = [
+const PALETTE: [PaletteColor; 28] = [
     PaletteColor {
         name: "black",
         color: Rgba([0, 0, 0, 255]),
+    },
+    PaletteColor {
+        name: "gray",
+        color: Rgba([128, 128, 128, 255]),
+    },
+    PaletteColor {
+        name: "dark red",
+        color: Rgba([128, 0, 0, 255]),
+    },
+    PaletteColor {
+        name: "olive",
+        color: Rgba([128, 128, 0, 255]),
+    },
+    PaletteColor {
+        name: "dark green",
+        color: Rgba([0, 128, 0, 255]),
+    },
+    PaletteColor {
+        name: "teal",
+        color: Rgba([0, 128, 128, 255]),
+    },
+    PaletteColor {
+        name: "navy",
+        color: Rgba([0, 0, 128, 255]),
+    },
+    PaletteColor {
+        name: "purple",
+        color: Rgba([128, 0, 128, 255]),
+    },
+    PaletteColor {
+        name: "khaki",
+        color: Rgba([128, 128, 64, 255]),
+    },
+    PaletteColor {
+        name: "dark teal",
+        color: Rgba([0, 64, 64, 255]),
+    },
+    PaletteColor {
+        name: "azure",
+        color: Rgba([0, 128, 255, 255]),
+    },
+    PaletteColor {
+        name: "dark azure",
+        color: Rgba([0, 64, 128, 255]),
+    },
+    PaletteColor {
+        name: "violet",
+        color: Rgba([128, 0, 255, 255]),
+    },
+    PaletteColor {
+        name: "brown",
+        color: Rgba([128, 64, 0, 255]),
     },
     PaletteColor {
         name: "white",
         color: Rgba([255, 255, 255, 255]),
     },
     PaletteColor {
+        name: "silver",
+        color: Rgba([192, 192, 192, 255]),
+    },
+    PaletteColor {
         name: "red",
         color: Rgba([255, 0, 0, 255]),
     },
     PaletteColor {
-        name: "orange",
-        color: Rgba([255, 128, 0, 255]),
-    },
-    PaletteColor {
         name: "yellow",
-        color: Rgba([255, 221, 0, 255]),
+        color: Rgba([255, 255, 0, 255]),
     },
     PaletteColor {
         name: "green",
-        color: Rgba([0, 180, 80, 255]),
+        color: Rgba([0, 255, 0, 255]),
     },
     PaletteColor {
         name: "cyan",
-        color: Rgba([0, 190, 220, 255]),
+        color: Rgba([0, 255, 255, 255]),
     },
     PaletteColor {
         name: "blue",
-        color: Rgba([30, 100, 255, 255]),
+        color: Rgba([0, 0, 255, 255]),
     },
     PaletteColor {
-        name: "purple",
-        color: Rgba([160, 80, 220, 255]),
+        name: "magenta",
+        color: Rgba([255, 0, 255, 255]),
+    },
+    PaletteColor {
+        name: "light yellow",
+        color: Rgba([255, 255, 128, 255]),
+    },
+    PaletteColor {
+        name: "spring green",
+        color: Rgba([0, 255, 128, 255]),
+    },
+    PaletteColor {
+        name: "light cyan",
+        color: Rgba([128, 255, 255, 255]),
+    },
+    PaletteColor {
+        name: "periwinkle",
+        color: Rgba([128, 128, 255, 255]),
+    },
+    PaletteColor {
+        name: "pink",
+        color: Rgba([255, 0, 128, 255]),
+    },
+    PaletteColor {
+        name: "orange",
+        color: Rgba([255, 128, 64, 255]),
     },
 ];
 
@@ -334,17 +420,18 @@ fn handle_key(key: KeyEvent, canvas: &mut DrawingCanvas, state: &mut State) -> K
         },
         InputMode::None => {
             let tool = match key.code {
-                KeyCode::Char('f') => Some(Tool::Freehand),
+                KeyCode::Char('e') => Some(Tool::Eraser),
+                KeyCode::Char('f') => Some(Tool::Fill),
+                KeyCode::Char('i') => Some(Tool::Picker),
+                KeyCode::Char('p') => Some(Tool::Pencil),
+                KeyCode::Char('b') => Some(Tool::Brush),
+                KeyCode::Char('a') => Some(Tool::Airbrush),
+                KeyCode::Char('t') => Some(Tool::Text),
                 KeyCode::Char('l') => Some(Tool::Line),
                 KeyCode::Char('r') => Some(Tool::Rectangle),
-                KeyCode::Char('e') => Some(Tool::Ellipse),
-                KeyCode::Char('a') => Some(Tool::Arrow),
-                KeyCode::Char('t') => Some(Tool::Text),
+                KeyCode::Char('o') => Some(Tool::Ellipse),
+                KeyCode::Char('u') => Some(Tool::RoundedRectangle),
                 KeyCode::Char('h') => Some(Tool::Highlighter),
-                KeyCode::Char('x') => Some(Tool::Redaction),
-                KeyCode::Char('d') => Some(Tool::Eraser),
-                KeyCode::Char('g') => Some(Tool::Fill),
-                KeyCode::Char('p') => Some(Tool::Picker),
                 _ => None,
             };
             if let Some(tool) = tool {
@@ -386,12 +473,10 @@ fn handle_key(key: KeyEvent, canvas: &mut DrawingCanvas, state: &mut State) -> K
                     };
                 }
                 KeyCode::Char('[') => {
-                    state.width = state.width.previous();
-                    state.message = format!("Size: {}", state.width.label());
+                    state.set_width(state.width().previous());
                 }
                 KeyCode::Char(']') => {
-                    state.width = state.width.next();
-                    state.message = format!("Size: {}", state.width.label());
+                    state.set_width(state.width().next());
                 }
                 KeyCode::Char('c') => {
                     state.input = InputMode::Color {
@@ -400,7 +485,7 @@ fn handle_key(key: KeyEvent, canvas: &mut DrawingCanvas, state: &mut State) -> K
                     };
                     state.message = "Enter primary color".into();
                 }
-                KeyCode::Char('b') => {
+                KeyCode::Char('v') => {
                     state.input = InputMode::Color {
                         target: ColorTarget::Secondary,
                         buffer: String::new(),
@@ -463,20 +548,10 @@ fn handle_mouse(
                     }
                     true
                 }
-                MouseTarget::Status(column) => {
-                    if let Some(palette) = palette_at(column, state, canvas, layout.columns) {
-                        let target = if button == MouseButton::Right {
-                            ColorTarget::Secondary
-                        } else {
-                            ColorTarget::Primary
-                        };
-                        state.set_color(target, palette.color, palette.name);
-                        true
-                    } else {
-                        false
-                    }
+                MouseTarget::Ui { row, column } => {
+                    handle_toolbar_click(row, column, button, canvas, state, layout.columns)
                 }
-                MouseTarget::Input | MouseTarget::None => false,
+                MouseTarget::None => false,
             }
         }
         MouseEventKind::Drag(button) if *captured == Some(button) => {
@@ -503,113 +578,288 @@ fn render_ui<W: Write>(
     canvas: &DrawingCanvas,
     layout: Layout,
 ) -> Result<()> {
-    if let Some(row) = layout.status_row() {
-        queue!(output, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
-        write_status(output, state, canvas, layout.columns)?;
+    for index in 0..2 {
+        if let Some(row) = layout.toolbar_row(index) {
+            queue!(output, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+            write_toolbar_row(output, state, layout.columns, index as u16)?;
+        }
     }
-    if let Some(row) = layout.input_row() {
+    if let Some(row) = layout.message_row() {
         queue!(
             output,
             MoveTo(0, row),
             Clear(ClearType::CurrentLine),
-            Print(truncate(&input_text(state), layout.columns))
+            Print(truncate(&message_text(state, canvas), layout.columns))
         )?;
     }
     output.flush()?;
     Ok(())
 }
 
-fn write_status<W: Write>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolbarControl {
+    Tool(Tool),
+    Width(WidthPreset),
+    PrimaryWell,
+    SecondaryWell,
+    Palette(usize),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ToolbarMetrics {
+    tool_tile_width: u16,
+    tools_width: u16,
+    option_start: u16,
+    option_width: u16,
+    option_tile_width: u16,
+    colors_start: u16,
+    well_width: u16,
+    palette_start: u16,
+    swatch_width: u16,
+}
+
+impl ToolbarMetrics {
+    fn new(columns: u32) -> Self {
+        let compact = columns < 59;
+        let tool_tile_width = if compact { 2 } else { 3 };
+        let tools_width = tool_tile_width * 6;
+        let option_start = tools_width + 1;
+        let option_width = if compact { 4 } else { 8 };
+        let option_tile_width = option_width / 4;
+        let colors_start = option_start + option_width + 1;
+        let well_width = if compact { 2 } else { 3 };
+        let palette_start = colors_start + well_width;
+        let swatch_width = if compact { 1 } else { 2 };
+        Self {
+            tool_tile_width,
+            tools_width,
+            option_start,
+            option_width,
+            option_tile_width,
+            colors_start,
+            well_width,
+            palette_start,
+            swatch_width,
+        }
+    }
+
+    fn palette_slots(self, columns: u32) -> usize {
+        let remaining = columns.saturating_sub(u32::from(self.palette_start));
+        usize::try_from((remaining / u32::from(self.swatch_width)).min(14)).unwrap_or(14)
+    }
+
+    fn hit(self, row: u16, column: u16, columns: u32) -> Option<ToolbarControl> {
+        if row >= 2 {
+            return None;
+        }
+        if column < self.tools_width {
+            let position = usize::from(column / self.tool_tile_width);
+            return Tool::ALL
+                .get(usize::from(row) * 6 + position)
+                .copied()
+                .map(ToolbarControl::Tool);
+        }
+        if row == 1 && column >= self.option_start && column < self.option_start + self.option_width
+        {
+            return WidthPreset::ALL
+                .get(usize::from(
+                    (column - self.option_start) / self.option_tile_width,
+                ))
+                .copied()
+                .map(ToolbarControl::Width);
+        }
+        if column >= self.colors_start && column < self.palette_start {
+            return Some(if row == 0 {
+                ToolbarControl::PrimaryWell
+            } else {
+                ToolbarControl::SecondaryWell
+            });
+        }
+        if column >= self.palette_start {
+            let position = usize::from((column - self.palette_start) / self.swatch_width);
+            if position < self.palette_slots(columns) {
+                return Some(ToolbarControl::Palette(usize::from(row) * 14 + position));
+            }
+        }
+        None
+    }
+}
+
+fn handle_toolbar_click(
+    row: u16,
+    column: u16,
+    button: MouseButton,
+    canvas: &mut DrawingCanvas,
+    state: &mut State,
+    columns: u32,
+) -> bool {
+    let Some(control) = ToolbarMetrics::new(columns).hit(row, column, columns) else {
+        return false;
+    };
+    match control {
+        ToolbarControl::Tool(tool) => {
+            canvas.cancel();
+            state.set_tool(tool);
+        }
+        ToolbarControl::Width(width) => {
+            if !state.tool.supports_width() {
+                return false;
+            }
+            state.set_width(width);
+        }
+        ToolbarControl::PrimaryWell | ToolbarControl::SecondaryWell => {
+            let target = if control == ToolbarControl::PrimaryWell {
+                ColorTarget::Primary
+            } else {
+                ColorTarget::Secondary
+            };
+            state.input = InputMode::Color {
+                target,
+                buffer: String::new(),
+            };
+            state.message = format!("Enter {} color", color_target_label(target).to_lowercase());
+        }
+        ToolbarControl::Palette(index) => {
+            let palette = PALETTE[index];
+            let target = if button == MouseButton::Right {
+                ColorTarget::Secondary
+            } else {
+                ColorTarget::Primary
+            };
+            state.set_color(target, palette.color, palette.name);
+        }
+    }
+    true
+}
+
+fn write_toolbar_row<W: Write>(
     output: &mut W,
     state: &State,
-    canvas: &DrawingCanvas,
     columns: u32,
+    row: u16,
 ) -> Result<()> {
-    let prefix = status_prefix(state, canvas);
-    let mut used = prefix.chars().count() as u32;
-    queue!(output, Print(truncate(&prefix, columns)))?;
-    for palette in PALETTE {
-        let width = palette_width(palette);
-        if used + width > columns {
-            break;
+    let metrics = ToolbarMetrics::new(columns);
+    for tool in &Tool::ALL[usize::from(row) * 6..usize::from(row + 1) * 6] {
+        if *tool == state.tool {
+            queue!(
+                output,
+                SetForegroundColor(Color::White),
+                SetBackgroundColor(Color::DarkGrey)
+            )?;
+        } else {
+            queue!(output, ResetColor)?;
         }
+        let tile = if metrics.tool_tile_width == 3 {
+            format!("{} ", tool_icon(*tool))
+        } else {
+            tool_icon(*tool).to_owned()
+        };
+        queue!(output, Print(tile))?;
+    }
+    queue!(output, ResetColor, Print("|"))?;
+    if row == 0 {
+        let label = if metrics.option_width == 8 {
+            " WIDTH  "
+        } else {
+            "SIZE"
+        };
+        queue!(output, Print(label))?;
+    } else if state.tool.supports_width() {
+        for (index, width) in WidthPreset::ALL.iter().enumerate() {
+            if *width == state.width() {
+                queue!(
+                    output,
+                    SetForegroundColor(Color::White),
+                    SetBackgroundColor(Color::DarkGrey)
+                )?;
+            } else {
+                queue!(output, ResetColor)?;
+            }
+            let sample = [".", "-", "=", "#"][index];
+            let tile = sample.repeat(usize::from(metrics.option_tile_width));
+            queue!(output, Print(tile))?;
+        }
+    } else {
+        queue!(output, Print(" ".repeat(usize::from(metrics.option_width))))?;
+    }
+    queue!(output, ResetColor, Print("|"))?;
+    let (label, active_color) = if row == 0 {
+        ("P", state.primary)
+    } else {
+        ("S", state.secondary)
+    };
+    let well = format!("{label}{}", " ".repeat(usize::from(metrics.well_width - 1)));
+    queue!(
+        output,
+        SetForegroundColor(contrast_color(active_color)),
+        SetBackgroundColor(terminal_color(active_color)),
+        Print(well),
+        ResetColor
+    )?;
+    let slots = metrics.palette_slots(columns);
+    for palette in &PALETTE[usize::from(row) * 14..usize::from(row) * 14 + slots] {
         queue!(
             output,
-            Print(" "),
             SetBackgroundColor(terminal_color(palette.color)),
-            Print("  "),
-            ResetColor,
-            Print(format!(" {}", palette.name))
+            Print(" ".repeat(usize::from(metrics.swatch_width)))
         )?;
-        used += width;
     }
     queue!(output, ResetColor)?;
     Ok(())
 }
 
-fn status_prefix(state: &State, canvas: &DrawingCanvas) -> String {
-    let (width, height) = canvas.dimensions();
-    format!(
-        "{}:{} | Size {} | P {} S {} | {}x{} | {} {} | {} | Palette",
-        tool_shortcut(state.tool),
-        tool_label(state.tool),
-        state.width.label(),
-        color_hex(state.primary),
-        color_hex(state.secondary),
-        width,
-        height,
-        state.format,
-        state.export_size,
-        if canvas.is_dirty() {
-            "modified"
-        } else {
-            "clean"
-        }
-    )
-}
-
-fn input_text(state: &State) -> String {
+fn message_text(state: &State, canvas: &DrawingCanvas) -> String {
     match &state.input {
         InputMode::Color { target, buffer } => format!(
             "{} color> {buffer}  Enter apply, Esc cancel",
-            if *target == ColorTarget::Primary {
-                "Primary"
-            } else {
-                "Secondary"
-            }
+            color_target_label(*target)
         ),
         InputMode::Text { buffer, .. } => format!("Text> {buffer}  Enter apply, Esc cancel"),
-        InputMode::None => format!(
-            "{} | f free l line r rect e ellipse a arrow t text h highlight x redact d erase g fill p pick [ ] size c/b colors C clear z/y undo/redo q save",
-            state.message
-        ),
+        InputMode::None => {
+            let (width, height) = canvas.dimensions();
+            let tool_width = if state.tool.supports_width() {
+                format!(" · {}", state.width().label())
+            } else {
+                String::new()
+            };
+            format!(
+                "{}{} · P {} S {} · {}x{} · {} {} · {} · {}",
+                tool_label(state.tool),
+                tool_width,
+                color_hex(state.primary),
+                color_hex(state.secondary),
+                width,
+                height,
+                state.format,
+                state.export_size,
+                if canvas.is_dirty() {
+                    "modified"
+                } else {
+                    "clean"
+                },
+                state.message
+            )
+        }
     }
 }
 
-fn palette_at(
-    column: u16,
-    state: &State,
-    canvas: &DrawingCanvas,
-    columns: u32,
-) -> Option<PaletteColor> {
-    let mut start = status_prefix(state, canvas).chars().count() as u16;
-    for palette in PALETTE {
-        let width = palette_width(palette) as u16;
-        if u32::from(start) + u32::from(width) > columns {
-            return None;
-        }
-        if column >= start && column < start + width {
-            return Some(palette);
-        }
-        start += width;
+fn color_target_label(target: ColorTarget) -> &'static str {
+    match target {
+        ColorTarget::Primary => "Primary",
+        ColorTarget::Secondary => "Secondary",
     }
-    None
 }
-fn palette_width(value: PaletteColor) -> u32 {
-    value.name.len() as u32 + 4
-}
+
 fn truncate(value: &str, columns: u32) -> String {
     value.chars().take(columns as usize).collect()
+}
+
+fn contrast_color(value: Rgba<u8>) -> Color {
+    if u16::from(value[0]) + u16::from(value[1]) + u16::from(value[2]) > 420 {
+        Color::Black
+    } else {
+        Color::White
+    }
 }
 fn terminal_color(value: Rgba<u8>) -> Color {
     Color::Rgb {
@@ -656,32 +906,35 @@ fn parse_color(value: &str) -> Option<Rgba<u8>> {
 
 fn tool_label(tool: Tool) -> &'static str {
     match tool {
-        Tool::Freehand => "freehand",
-        Tool::Line => "line",
-        Tool::Rectangle => "rectangle",
-        Tool::Ellipse => "ellipse",
-        Tool::Arrow => "arrow",
-        Tool::Text => "text",
-        Tool::Highlighter => "highlight",
-        Tool::Redaction => "redact",
-        Tool::Eraser => "eraser",
-        Tool::Fill => "fill",
-        Tool::Picker => "picker",
+        Tool::Eraser => "Eraser",
+        Tool::Fill => "Fill",
+        Tool::Picker => "Color Picker",
+        Tool::Pencil => "Pencil",
+        Tool::Brush => "Brush",
+        Tool::Airbrush => "Airbrush",
+        Tool::Text => "Text",
+        Tool::Line => "Line",
+        Tool::Rectangle => "Rectangle",
+        Tool::Ellipse => "Ellipse",
+        Tool::RoundedRectangle => "Rounded Rectangle",
+        Tool::Highlighter => "Highlighter",
     }
 }
-fn tool_shortcut(tool: Tool) -> char {
+
+fn tool_icon(tool: Tool) -> &'static str {
     match tool {
-        Tool::Freehand => 'f',
-        Tool::Line => 'l',
-        Tool::Rectangle => 'r',
-        Tool::Ellipse => 'e',
-        Tool::Arrow => 'a',
-        Tool::Text => 't',
-        Tool::Highlighter => 'h',
-        Tool::Redaction => 'x',
-        Tool::Eraser => 'd',
-        Tool::Fill => 'g',
-        Tool::Picker => 'p',
+        Tool::Eraser => "<>",
+        Tool::Fill => "\\/",
+        Tool::Picker => "'/",
+        Tool::Pencil => "//",
+        Tool::Brush => "##",
+        Tool::Airbrush => "::",
+        Tool::Text => "Aa",
+        Tool::Line => "--",
+        Tool::Rectangle => "[]",
+        Tool::Ellipse => "()",
+        Tool::RoundedRectangle => "{}",
+        Tool::Highlighter => "==",
     }
 }
 
@@ -699,10 +952,10 @@ mod tests {
     #[test]
     fn custom_colors_and_shortcuts_work() {
         assert_eq!(parse_color("#0f0"), Some(Rgba([0, 255, 0, 255])));
-        assert_eq!(parse_color("blue"), Some(Rgba([30, 100, 255, 255])));
+        assert_eq!(parse_color("blue"), Some(Rgba([0, 0, 255, 255])));
         let (mut canvas, mut state) = state();
         handle_key(
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
             &mut canvas,
             &mut state,
         );
@@ -721,7 +974,67 @@ mod tests {
         let color = canvas.color_at(Point::new(0.5, 0.5));
         state.set_color(ColorTarget::Primary, color, "picked");
         state.tool = state.previous_tool;
-        assert_eq!(state.tool, Tool::Freehand);
+        assert_eq!(state.tool, Tool::Pencil);
         assert!(!canvas.is_dirty());
+    }
+
+    #[test]
+    fn toolbar_hitboxes_select_tools_widths_and_colors() {
+        let (mut canvas, mut state) = state();
+        let metrics = ToolbarMetrics::new(80);
+        assert_eq!(
+            metrics.hit(0, 0, 80),
+            Some(ToolbarControl::Tool(Tool::Eraser))
+        );
+        assert_eq!(
+            metrics.hit(1, metrics.tool_tile_width * 5, 80),
+            Some(ToolbarControl::Tool(Tool::Highlighter))
+        );
+
+        handle_toolbar_click(
+            0,
+            metrics.tool_tile_width * 4,
+            MouseButton::Left,
+            &mut canvas,
+            &mut state,
+            80,
+        );
+        assert_eq!(state.tool, Tool::Brush);
+        handle_toolbar_click(
+            1,
+            metrics.option_start + metrics.option_tile_width * 3,
+            MouseButton::Left,
+            &mut canvas,
+            &mut state,
+            80,
+        );
+        assert_eq!(state.width(), WidthPreset::ExtraLarge);
+
+        handle_toolbar_click(
+            0,
+            metrics.palette_start,
+            MouseButton::Right,
+            &mut canvas,
+            &mut state,
+            80,
+        );
+        assert_eq!(state.secondary, PALETTE[0].color);
+    }
+
+    #[test]
+    fn widthless_tools_leave_contextual_options_inactive() {
+        let (mut canvas, mut state) = state();
+        let metrics = ToolbarMetrics::new(40);
+        state.set_tool(Tool::Pencil);
+        assert!(!handle_toolbar_click(
+            1,
+            metrics.option_start,
+            MouseButton::Left,
+            &mut canvas,
+            &mut state,
+            40,
+        ));
+        assert_eq!(state.width(), WidthPreset::Medium);
+        assert_eq!(metrics.palette_slots(40), 14);
     }
 }

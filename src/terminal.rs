@@ -16,7 +16,7 @@ use crossterm::{
 
 use crate::canvas::Point;
 
-pub const RESERVED_UI_ROWS: u32 = 2;
+pub const RESERVED_UI_ROWS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -34,13 +34,14 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn status_row(self) -> Option<u16> {
-        (self.rows > self.canvas_rows).then(|| u16::try_from(self.canvas_rows).unwrap_or(u16::MAX))
+    pub fn toolbar_row(self, index: u32) -> Option<u16> {
+        (index < 2 && self.rows > self.canvas_rows + index)
+            .then(|| u16::try_from(self.canvas_rows + index).unwrap_or(u16::MAX))
     }
 
-    pub fn input_row(self) -> Option<u16> {
-        (self.rows > self.canvas_rows + 1)
-            .then(|| u16::try_from(self.canvas_rows + 1).unwrap_or(u16::MAX))
+    pub fn message_row(self) -> Option<u16> {
+        (self.rows > self.canvas_rows + 2)
+            .then(|| u16::try_from(self.canvas_rows + 2).unwrap_or(u16::MAX))
     }
 
     pub fn canvas_display_width(self) -> u32 {
@@ -112,8 +113,7 @@ enum CoordinateMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MouseTarget {
     Canvas(Point),
-    Status(u16),
-    Input,
+    Ui { row: u16, column: u16 },
     None,
 }
 
@@ -152,10 +152,11 @@ impl MouseMapper {
                 (y as f32 + 0.5) / layout.canvas_rows.max(1) as f32,
             ));
         }
-        if Some(event.row) == layout.status_row() {
-            MouseTarget::Status(event.column)
-        } else if Some(event.row) == layout.input_row() {
-            MouseTarget::Input
+        if row < layout.rows {
+            MouseTarget::Ui {
+                row: u16::try_from(row.saturating_sub(layout.canvas_rows)).unwrap_or(u16::MAX),
+                column: event.column,
+            }
         } else {
             MouseTarget::None
         }
@@ -186,10 +187,11 @@ impl MouseMapper {
             .saturating_sub(layout.grid_origin_x)
             .checked_div(layout.cell_width.max(1))
             .unwrap_or(0);
-        if row == layout.canvas_rows {
-            MouseTarget::Status(u16::try_from(column).unwrap_or(u16::MAX))
-        } else if row == layout.canvas_rows + 1 {
-            MouseTarget::Input
+        if row >= layout.canvas_rows && row < layout.rows {
+            MouseTarget::Ui {
+                row: u16::try_from(row - layout.canvas_rows).unwrap_or(u16::MAX),
+                column: u16::try_from(column).unwrap_or(u16::MAX),
+            }
         } else {
             MouseTarget::None
         }
@@ -347,7 +349,7 @@ mod tests {
         Layout {
             columns: 80,
             rows: 24,
-            canvas_rows: 22,
+            canvas_rows: 21,
             viewport_width: 800,
             viewport_height: 480,
             grid_origin_x: 0,
@@ -372,7 +374,7 @@ mod tests {
         };
         assert_eq!(
             mapper.target(event, layout(), true),
-            MouseTarget::Canvas(Point::new(0.99375, 0.97727275))
+            MouseTarget::Canvas(Point::new(0.99375, 0.97619045))
         );
     }
 
@@ -431,12 +433,12 @@ mod tests {
         let event = MouseEvent {
             kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
             column: 3,
-            row: 22,
+            row: 21,
             modifiers: KeyModifiers::NONE,
         };
         assert_eq!(
             mapper.target(event, layout(), false),
-            MouseTarget::Status(3)
+            MouseTarget::Ui { row: 0, column: 3 }
         );
     }
 }
