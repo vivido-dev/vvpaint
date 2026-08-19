@@ -749,12 +749,7 @@ fn write_toolbar_row<W: Write>(
         } else {
             queue!(output, ResetColor)?;
         }
-        let tile = if metrics.tool_tile_width == 3 {
-            format!("{} ", tool_icon(*tool))
-        } else {
-            tool_icon(*tool).to_owned()
-        };
-        queue!(output, Print(tile))?;
+        queue!(output, Print(tool_tile(*tool, metrics.tool_tile_width)))?;
     }
     queue!(output, ResetColor, Print("|"))?;
     if row == 0 {
@@ -923,30 +918,55 @@ fn tool_label(tool: Tool) -> &'static str {
 
 fn tool_icon(tool: Tool) -> &'static str {
     match tool {
-        Tool::Eraser => "<>",
-        Tool::Fill => "\\/",
-        Tool::Picker => "'/",
-        Tool::Pencil => "//",
-        Tool::Brush => "##",
-        Tool::Airbrush => "::",
-        Tool::Text => "Aa",
-        Tool::Line => "--",
-        Tool::Rectangle => "[]",
-        Tool::Ellipse => "()",
-        Tool::RoundedRectangle => "{}",
-        Tool::Highlighter => "==",
+        Tool::Eraser => "\u{e14a}",           // backspace
+        Tool::Fill => "\u{e23a}",             // format_color_fill
+        Tool::Picker => "\u{e3b8}",           // colorize
+        Tool::Pencil => "\u{e3c9}",           // edit
+        Tool::Brush => "\u{e3ae}",            // brush
+        Tool::Airbrush => "\u{e3a5}",         // blur_on
+        Tool::Text => "\u{e264}",             // title
+        Tool::Line => "\u{f108}",             // horizontal_rule
+        Tool::Rectangle => "\u{e835}",        // check_box_outline_blank
+        Tool::Ellipse => "\u{e40c}",          // panorama_fish_eye
+        Tool::RoundedRectangle => "\u{e3bc}", // crop_16_9
+        Tool::Highlighter => "\u{e25f}",      // highlight
     }
+}
+
+fn tool_tile(tool: Tool, width: u16) -> String {
+    let mut tile = tool_icon(tool).to_owned();
+    tile.push_str(&" ".repeat(usize::from(width.saturating_sub(1))));
+    tile
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use ab_glyph::{Font, FontRef};
 
     fn state() -> (DrawingCanvas, State) {
         let canvas = DrawingCanvas::blank(100, 50, Theme::Light);
         let state = State::new(&canvas, ExportFormat::Png, ExportSize::Canvas);
         (canvas, state)
+    }
+
+    #[test]
+    fn tool_icons_are_single_cell_glyphs_in_bundled_material_icons_font() {
+        let font = FontRef::try_from_slice(include_bytes!("../assets/MaterialIcons-Regular.ttf"))
+            .expect("bundled Material Icons font should be valid");
+
+        for tool in Tool::ALL {
+            let mut characters = tool_icon(tool).chars();
+            let character = characters.next().expect("tool icon should not be empty");
+            assert!(
+                characters.next().is_none(),
+                "{tool:?} icon must be one cell"
+            );
+            assert_ne!(font.glyph_id(character).0, 0, "{tool:?} icon is absent");
+            assert_eq!(tool_tile(tool, 2).chars().count(), 2);
+            assert_eq!(tool_tile(tool, 3).chars().count(), 3);
+        }
     }
 
     #[test]
