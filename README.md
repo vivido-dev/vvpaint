@@ -48,7 +48,7 @@ The interaction model, drawing algorithms, export behavior, and embedded Noto Sa
 derived from Kitdraw 0.2.1. Kitdraw is MIT licensed; see `LICENSE`. Noto Sans is licensed under the
 SIL Open Font License 1.1; see `assets/NotoSans-OFL.txt`. The font bytes are included from the
 unchanged repository reference asset at `../kitdraw/assets/NotoSans-Regular.ttf`. Toolbar icons use
-the Apache-2.0-licensed Material Icons glyphs bundled in `assets/MaterialIcons-Regular.ttf`.
+standard Unicode emoji available in the bundled `assets/seguiemj-1.35-flat.ttf` face.
 
 ## Verification
 

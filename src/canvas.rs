@@ -97,18 +97,16 @@ pub enum WidthPreset {
     Small,
     Medium,
     Large,
-    ExtraLarge,
 }
 
 impl WidthPreset {
-    pub const ALL: [Self; 4] = [Self::Small, Self::Medium, Self::Large, Self::ExtraLarge];
+    pub const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
 
     pub fn previous(self) -> Self {
         match self {
-            Self::Small => Self::ExtraLarge,
+            Self::Small => Self::Large,
             Self::Medium => Self::Small,
             Self::Large => Self::Medium,
-            Self::ExtraLarge => Self::Large,
         }
     }
 
@@ -116,8 +114,7 @@ impl WidthPreset {
         match self {
             Self::Small => Self::Medium,
             Self::Medium => Self::Large,
-            Self::Large => Self::ExtraLarge,
-            Self::ExtraLarge => Self::Small,
+            Self::Large => Self::Small,
         }
     }
 
@@ -126,7 +123,6 @@ impl WidthPreset {
             Self::Small => "small",
             Self::Medium => "medium",
             Self::Large => "large",
-            Self::ExtraLarge => "extra large",
         }
     }
 
@@ -135,7 +131,6 @@ impl WidthPreset {
             Self::Small => 0.65,
             Self::Medium => 1.0,
             Self::Large => 1.7,
-            Self::ExtraLarge => 2.5,
         }
     }
 
@@ -144,7 +139,6 @@ impl WidthPreset {
             Self::Small => 0.85,
             Self::Medium => 1.1,
             Self::Large => 1.55,
-            Self::ExtraLarge => 2.0,
         }
     }
 }

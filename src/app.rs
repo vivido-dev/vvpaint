@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use crossterm::{
-    cursor::MoveTo,
+    cursor::{MoveTo, MoveToColumn},
     event::{
         self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
         MouseEvent, MouseEventKind,
@@ -621,14 +621,14 @@ struct ToolbarMetrics {
 impl ToolbarMetrics {
     fn new(columns: u32) -> Self {
         let compact = columns < 59;
-        let tool_tile_width = if compact { 2 } else { 3 };
+        let tool_tile_width = if compact { 2 } else { 4 };
         let tools_width = tool_tile_width * 6;
         let option_start = tools_width + 1;
-        let option_width = if compact { 4 } else { 8 };
-        let option_tile_width = option_width / 4;
+        let option_tile_width = 2;
+        let option_width = option_tile_width * 3;
         let colors_start = option_start + option_width + 1;
         let well_width = if compact { 2 } else { 3 };
-        let palette_start = colors_start + well_width;
+        let palette_start = if compact { 24 } else { 40 };
         let swatch_width = if compact { 1 } else { 2 };
         Self {
             tool_tile_width,
@@ -668,7 +668,7 @@ impl ToolbarMetrics {
                 .copied()
                 .map(ToolbarControl::Width);
         }
-        if column >= self.colors_start && column < self.palette_start {
+        if column >= self.colors_start && column < self.colors_start + self.well_width {
             return Some(if row == 0 {
                 ToolbarControl::PrimaryWell
             } else {
@@ -739,7 +739,14 @@ fn write_toolbar_row<W: Write>(
     row: u16,
 ) -> Result<()> {
     let metrics = ToolbarMetrics::new(columns);
-    for tool in &Tool::ALL[usize::from(row) * 6..usize::from(row + 1) * 6] {
+    for (position, tool) in Tool::ALL[usize::from(row) * 6..usize::from(row + 1) * 6]
+        .iter()
+        .enumerate()
+    {
+        queue!(
+            output,
+            MoveToColumn(u16::try_from(position).unwrap_or(u16::MAX) * metrics.tool_tile_width)
+        )?;
         if *tool == state.tool {
             queue!(
                 output,
@@ -751,17 +758,25 @@ fn write_toolbar_row<W: Write>(
         }
         queue!(output, Print(tool_tile(*tool, metrics.tool_tile_width)))?;
     }
-    queue!(output, ResetColor, Print("|"))?;
+    queue!(
+        output,
+        ResetColor,
+        MoveToColumn(metrics.tools_width),
+        Print("|"),
+        MoveToColumn(metrics.option_start)
+    )?;
     if row == 0 {
-        let label = if metrics.option_width == 8 {
-            " WIDTH  "
-        } else {
-            "SIZE"
-        };
-        queue!(output, Print(label))?;
+        queue!(output, Print("Width "))?;
     } else if state.tool.supports_width() {
-        for (index, width) in WidthPreset::ALL.iter().enumerate() {
-            if *width == state.width() {
+        for (position, width) in WidthPreset::ALL.into_iter().enumerate() {
+            queue!(
+                output,
+                MoveToColumn(
+                    metrics.option_start
+                        + u16::try_from(position).unwrap_or(u16::MAX) * metrics.option_tile_width
+                )
+            )?;
+            if width == state.width() {
                 queue!(
                     output,
                     SetForegroundColor(Color::White),
@@ -770,14 +785,18 @@ fn write_toolbar_row<W: Write>(
             } else {
                 queue!(output, ResetColor)?;
             }
-            let sample = [".", "-", "=", "#"][index];
-            let tile = sample.repeat(usize::from(metrics.option_tile_width));
-            queue!(output, Print(tile))?;
+            queue!(output, Print(width_tile(width, metrics.option_tile_width)))?;
         }
     } else {
         queue!(output, Print(" ".repeat(usize::from(metrics.option_width))))?;
     }
-    queue!(output, ResetColor, Print("|"))?;
+    queue!(
+        output,
+        ResetColor,
+        MoveToColumn(metrics.colors_start - 1),
+        Print("|"),
+        MoveToColumn(metrics.colors_start)
+    )?;
     let (label, active_color) = if row == 0 {
         ("P", state.primary)
     } else {
@@ -789,7 +808,8 @@ fn write_toolbar_row<W: Write>(
         SetForegroundColor(contrast_color(active_color)),
         SetBackgroundColor(terminal_color(active_color)),
         Print(well),
-        ResetColor
+        ResetColor,
+        MoveToColumn(metrics.palette_start)
     )?;
     let slots = metrics.palette_slots(columns);
     for palette in &PALETTE[usize::from(row) * 14..usize::from(row) * 14 + slots] {
@@ -918,24 +938,54 @@ fn tool_label(tool: Tool) -> &'static str {
 
 fn tool_icon(tool: Tool) -> &'static str {
     match tool {
-        Tool::Eraser => "\u{e14a}",           // backspace
-        Tool::Fill => "\u{e23a}",             // format_color_fill
-        Tool::Picker => "\u{e3b8}",           // colorize
-        Tool::Pencil => "\u{e3c9}",           // edit
-        Tool::Brush => "\u{e3ae}",            // brush
-        Tool::Airbrush => "\u{e3a5}",         // blur_on
-        Tool::Text => "\u{e264}",             // title
-        Tool::Line => "\u{f108}",             // horizontal_rule
-        Tool::Rectangle => "\u{e835}",        // check_box_outline_blank
-        Tool::Ellipse => "\u{e40c}",          // panorama_fish_eye
-        Tool::RoundedRectangle => "\u{e3bc}", // crop_16_9
-        Tool::Highlighter => "\u{e25f}",      // highlight
+        Tool::Eraser => "\u{1f9fc}",              // soap
+        Tool::Fill => "\u{1faa3}",                // bucket
+        Tool::Picker => "\u{1f9ea}",              // test tube
+        Tool::Pencil => "\u{270f}",       // pencil
+        Tool::Brush => "\u{1f58c}",       // paintbrush
+        Tool::Airbrush => "\u{1f4a8}",            // dashing away
+        Tool::Text => "\u{1f524}",                // input Latin letters
+        Tool::Line => "\u{1f4cf}",                // straight ruler
+        Tool::Rectangle => "\u{f0e5f}",           // Material Design rectangle-outline
+        Tool::Ellipse => "\u{f0ea1}",             // Material Design ellipse-outline
+        Tool::RoundedRectangle => "\u{f14fc}",    // Material Design square-rounded-outline
+        Tool::Highlighter => "\u{1f58d}", // crayon
+    }
+}
+
+fn tool_icon_width(tool: Tool) -> u16 {
+    match tool {
+        Tool::Pencil
+        | Tool::Brush
+        | Tool::Rectangle
+        | Tool::Ellipse
+        | Tool::RoundedRectangle
+        | Tool::Highlighter => 1,
+        Tool::Eraser | Tool::Fill | Tool::Picker | Tool::Airbrush | Tool::Text | Tool::Line => 2,
     }
 }
 
 fn tool_tile(tool: Tool, width: u16) -> String {
-    let mut tile = tool_icon(tool).to_owned();
-    tile.push_str(&" ".repeat(usize::from(width.saturating_sub(1))));
+    let padding = width.saturating_sub(tool_icon_width(tool));
+    let leading = padding / 2;
+    let trailing = padding - leading;
+    let mut tile = " ".repeat(usize::from(leading));
+    tile.push_str(tool_icon(tool));
+    tile.push_str(&" ".repeat(usize::from(trailing)));
+    tile
+}
+
+fn width_icon(width: WidthPreset) -> &'static str {
+    match width {
+        WidthPreset::Small => "S",
+        WidthPreset::Medium => "M",
+        WidthPreset::Large => "L",
+    }
+}
+
+fn width_tile(width: WidthPreset, tile_width: u16) -> String {
+    let mut tile = width_icon(width).to_owned();
+    tile.push_str(&" ".repeat(usize::from(tile_width.saturating_sub(1))));
     tile
 }
 
@@ -952,20 +1002,54 @@ mod tests {
     }
 
     #[test]
-    fn tool_icons_are_single_cell_glyphs_in_bundled_material_icons_font() {
-        let font = FontRef::try_from_slice(include_bytes!("../assets/MaterialIcons-Regular.ttf"))
-            .expect("bundled Material Icons font should be valid");
+    fn tool_icons_use_supported_fonts_and_fit_tiles() {
+        let font = FontRef::try_from_slice(include_bytes!("../assets/seguiemj-1.35-flat.ttf"))
+            .expect("bundled Segoe UI Emoji font should be valid");
 
         for tool in Tool::ALL {
-            let mut characters = tool_icon(tool).chars();
-            let character = characters.next().expect("tool icon should not be empty");
-            assert!(
-                characters.next().is_none(),
-                "{tool:?} icon must be one cell"
+            let icon = tool_icon(tool);
+            let base_characters = icon.chars().filter(|character| *character != '\u{fe0f}');
+            assert_eq!(
+                base_characters.count(),
+                1,
+                "{tool:?} must have one base glyph"
             );
-            assert_ne!(font.glyph_id(character).0, 0, "{tool:?} icon is absent");
-            assert_eq!(tool_tile(tool, 2).chars().count(), 2);
-            assert_eq!(tool_tile(tool, 3).chars().count(), 3);
+            if !matches!(
+                tool,
+                Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle
+            ) {
+                for character in icon.chars() {
+                    assert_ne!(font.glyph_id(character).0, 0, "{tool:?} glyph is absent");
+                }
+            }
+            for width in [2, 3] {
+                let padding = width - tool_icon_width(tool);
+                let leading = padding / 2;
+                let mut expected = " ".repeat(usize::from(leading));
+                expected.push_str(icon);
+                expected.push_str(&" ".repeat(usize::from(padding - leading)));
+                assert_eq!(tool_tile(tool, width), expected);
+            }
+        }
+
+        assert_eq!(tool_icon(Tool::Line), "\u{1f4cf}");
+        assert_eq!(tool_icon(Tool::Rectangle), "\u{f0e5f}");
+        assert_eq!(tool_icon(Tool::Ellipse), "\u{f0ea1}");
+        assert_eq!(tool_icon(Tool::RoundedRectangle), "\u{f14fc}");
+        assert_eq!(tool_tile(Tool::Rectangle, 4), " \u{f0e5f}  ");
+        assert_eq!(tool_tile(Tool::Ellipse, 4), " \u{f0ea1}  ");
+        assert_eq!(tool_tile(Tool::RoundedRectangle, 4), " \u{f14fc}  ");
+
+        assert_eq!(width_icon(WidthPreset::Small), "S");
+        assert_eq!(width_icon(WidthPreset::Medium), "M");
+        assert_eq!(width_icon(WidthPreset::Large), "L");
+        assert_eq!(width_tile(WidthPreset::Small, 2), "S ");
+        assert_eq!(width_tile(WidthPreset::Medium, 2), "M ");
+        assert_eq!(width_tile(WidthPreset::Large, 2), "L ");
+        for width in WidthPreset::ALL {
+            for character in width_icon(width).chars() {
+                assert_ne!(font.glyph_id(character).0, 0, "{width:?} glyph is absent");
+            }
         }
     }
 
@@ -1002,6 +1086,12 @@ mod tests {
     fn toolbar_hitboxes_select_tools_widths_and_colors() {
         let (mut canvas, mut state) = state();
         let metrics = ToolbarMetrics::new(80);
+        assert_eq!(metrics.tool_tile_width, 4);
+        assert_eq!(metrics.palette_start, 40);
+        assert!(
+            metrics.palette_start > metrics.colors_start + metrics.well_width,
+            "palette should have a fixed gap after the color well"
+        );
         assert_eq!(
             metrics.hit(0, 0, 80),
             Some(ToolbarControl::Tool(Tool::Eraser))
@@ -1022,13 +1112,13 @@ mod tests {
         assert_eq!(state.tool, Tool::Brush);
         handle_toolbar_click(
             1,
-            metrics.option_start + metrics.option_tile_width * 3,
+            metrics.option_start + metrics.option_tile_width * 2,
             MouseButton::Left,
             &mut canvas,
             &mut state,
             80,
         );
-        assert_eq!(state.width(), WidthPreset::ExtraLarge);
+        assert_eq!(state.width(), WidthPreset::Large);
 
         handle_toolbar_click(
             0,
@@ -1039,6 +1129,10 @@ mod tests {
             80,
         );
         assert_eq!(state.secondary, PALETTE[0].color);
+        assert_eq!(
+            metrics.hit(0, metrics.colors_start + metrics.well_width, 80),
+            None
+        );
     }
 
     #[test]
@@ -1055,6 +1149,7 @@ mod tests {
             40,
         ));
         assert_eq!(state.width(), WidthPreset::Medium);
+        assert_eq!(metrics.palette_start, 24);
         assert_eq!(metrics.palette_slots(40), 14);
     }
 }
