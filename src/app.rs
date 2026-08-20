@@ -630,9 +630,9 @@ impl ToolbarMetrics {
         let option_start = tools_width + 1;
         let option_tile_width = 2;
         let option_width = option_tile_width * 3;
-        let colors_start = option_start + option_width + 1;
         let well_width = if compact { 2 } else { 3 };
         let palette_start = if compact { 24 } else { 40 };
+        let colors_start = palette_start - well_width;
         let swatch_width = if compact { 1 } else { 2 };
         Self {
             tool_tile_width,
@@ -1116,9 +1116,14 @@ mod tests {
         let metrics = ToolbarMetrics::new(80);
         assert_eq!(metrics.tool_tile_width, 4);
         assert_eq!(metrics.palette_start, 40);
+        assert_eq!(
+            metrics.colors_start + metrics.well_width,
+            metrics.palette_start,
+            "color wells should touch the palette"
+        );
         assert!(
-            metrics.palette_start > metrics.colors_start + metrics.well_width,
-            "palette should have a fixed gap after the color well"
+            metrics.colors_start > metrics.option_start + metrics.option_width + 1,
+            "color wells should be separated from width selection"
         );
         assert_eq!(
             metrics.hit(0, 0, 80),
@@ -1159,7 +1164,7 @@ mod tests {
         assert_eq!(state.secondary, PALETTE[0].color);
         assert_eq!(
             metrics.hit(0, metrics.colors_start + metrics.well_width, 80),
-            None
+            Some(ToolbarControl::Palette(0))
         );
     }
 

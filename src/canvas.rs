@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::OnceLock};
 
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
-use image::{DynamicImage, Rgba, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, GrayImage, Luma, Rgba, RgbaImage, imageops::FilterType};
 
 use crate::theme::Theme;
 
@@ -687,7 +687,7 @@ fn draw_element(image: &mut RgbaImage, element: &Element, sizing: RenderSizing) 
         }
         Element::Airbrush { points, style } => draw_airbrush(image, points, *style, sizing),
         Element::Highlighter { points, style } => {
-            draw_path(image, points, *style, sizing.radius(*style) * 3.2)
+            draw_highlighter(image, points, *style, sizing.radius(*style) * 3.2)
         }
         Element::Line { start, end, style } => {
             draw_segment(image, *start, *end, *style, sizing.radius(*style))
@@ -837,12 +837,9 @@ fn hash_fraction(value: u64) -> f32 {
 }
 
 fn draw_path(image: &mut RgbaImage, points: &[Point], style: Style, radius: f32) {
-    if let Some(first) = points.first().copied() {
-        stamp(image, first, style, radius);
-    }
-    for pair in points.windows(2) {
-        draw_segment(image, pair[0], pair[1], style, radius);
-    }
+    for_each_path_stamp(points, image.width(), image.height(), radius, |x, y| {
+        stamp_xy(image, x, y, style, radius)
+    });
 }
 
 fn draw_segment(image: &mut RgbaImage, start: Point, end: Point, style: Style, radius: f32) {
@@ -853,6 +850,45 @@ fn draw_segment(image: &mut RgbaImage, start: Point, end: Point, style: Style, r
     for index in 0..=steps {
         let t = index as f32 / steps as f32;
         stamp_xy(image, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, style, radius);
+    }
+}
+
+fn draw_highlighter(image: &mut RgbaImage, points: &[Point], style: Style, radius: f32) {
+    let mut coverage = GrayImage::new(image.width(), image.height());
+    for_each_path_stamp(points, image.width(), image.height(), radius, |x, y| {
+        stamp_mask_xy(&mut coverage, x, y, radius)
+    });
+    for (destination, coverage) in image.pixels_mut().zip(coverage.pixels()) {
+        if coverage[0] != 0 {
+            blend(destination, style.color, style.opacity);
+        }
+    }
+}
+
+fn for_each_path_stamp(
+    points: &[Point],
+    width: u32,
+    height: u32,
+    radius: f32,
+    mut draw: impl FnMut(f32, f32),
+) {
+    let Some(first) = points.first().copied() else {
+        return;
+    };
+    let (mut previous_x, mut previous_y) = float_pixel(first, width, height);
+    draw(previous_x, previous_y);
+    for point in &points[1..] {
+        let (next_x, next_y) = float_pixel(*point, width, height);
+        let distance = (next_x - previous_x).hypot(next_y - previous_y);
+        let steps = (distance / (radius * 0.5).max(0.5)).ceil().max(1.0) as u32;
+        for index in 1..=steps {
+            let amount = index as f32 / steps as f32;
+            draw(
+                previous_x + (next_x - previous_x) * amount,
+                previous_y + (next_y - previous_y) * amount,
+            );
+        }
+        (previous_x, previous_y) = (next_x, next_y);
     }
 }
 
@@ -937,27 +973,37 @@ fn draw_rounded_rectangle(
     draw_path(image, &points, style, radius);
 }
 
-fn stamp(image: &mut RgbaImage, point: Point, style: Style, radius: f32) {
-    let (x, y) = float_pixel(point, image.width(), image.height());
-    stamp_xy(image, x, y, style, radius);
+fn stamp_xy(image: &mut RgbaImage, x: f32, y: f32, style: Style, radius: f32) {
+    for_each_stamp_pixel(image.width(), image.height(), x, y, radius, |px, py| {
+        blend(image.get_pixel_mut(px, py), style.color, style.opacity);
+    });
 }
 
-fn stamp_xy(image: &mut RgbaImage, x: f32, y: f32, style: Style, radius: f32) {
+fn stamp_mask_xy(mask: &mut GrayImage, x: f32, y: f32, radius: f32) {
+    for_each_stamp_pixel(mask.width(), mask.height(), x, y, radius, |px, py| {
+        mask.put_pixel(px, py, Luma([u8::MAX]));
+    });
+}
+
+fn for_each_stamp_pixel(
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    radius: f32,
+    mut draw: impl FnMut(u32, u32),
+) {
     let min_x = (x - radius).floor().max(0.0) as u32;
-    let max_x = (x + radius)
-        .ceil()
-        .min(image.width().saturating_sub(1) as f32) as u32;
+    let max_x = (x + radius).ceil().min(width.saturating_sub(1) as f32) as u32;
     let min_y = (y - radius).floor().max(0.0) as u32;
-    let max_y = (y + radius)
-        .ceil()
-        .min(image.height().saturating_sub(1) as f32) as u32;
+    let max_y = (y + radius).ceil().min(height.saturating_sub(1) as f32) as u32;
     let radius2 = radius * radius;
     for py in min_y..=max_y {
         for px in min_x..=max_x {
             let dx = px as f32 + 0.5 - x;
             let dy = py as f32 + 0.5 - y;
             if dx * dx + dy * dy <= radius2 {
-                blend(image.get_pixel_mut(px, py), style.color, style.opacity);
+                draw(px, py);
             }
         }
     }
@@ -1115,6 +1161,31 @@ mod tests {
         assert!(!canvas.is_dirty());
         canvas.finish();
         assert!(canvas.is_dirty());
+    }
+
+    #[test]
+    fn highlighter_blends_each_stroke_once_over_existing_content() {
+        let mut canvas = DrawingCanvas::blank(100, 50, Theme::Light);
+        canvas.begin(
+            Tool::Brush,
+            Point::new(0.1, 0.5),
+            style(Rgba([0, 0, 0, 255])),
+        );
+        canvas.extend(Point::new(0.9, 0.5));
+        canvas.finish();
+
+        canvas.begin(
+            Tool::Highlighter,
+            Point::new(0.1, 0.5),
+            Style::highlighter(Rgba([255, 255, 0, 255]), WidthPreset::Medium),
+        );
+        canvas.extend(Point::new(0.9, 0.5));
+        canvas.finish();
+
+        assert_eq!(
+            canvas.color_at(Point::new(0.5, 0.5)),
+            Rgba([97, 97, 0, 255])
+        );
     }
 
     #[test]
