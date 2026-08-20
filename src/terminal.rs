@@ -91,17 +91,23 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let mut output = io::stdout();
-        let _ = execute!(
-            output,
-            Show,
-            Print("\x1b[?1016l"),
-            DisableMouseCapture,
-            LeaveAlternateScreen,
-            MoveTo(0, 0)
-        );
+        let _ = leave_terminal(&mut output);
         let _ = output.flush();
         let _ = disable_raw_mode();
     }
+}
+
+/// Restore the primary screen and the cursor position saved by DECSET 1049.
+///
+/// No cursor movement may follow `LeaveAlternateScreen`: doing so would replace the restored
+/// shell position and put the next prompt at the top of the window.
+fn leave_terminal(output: &mut impl Write) -> io::Result<()> {
+    execute!(output, Print("\x1b[?1016l"), DisableMouseCapture)?;
+    restore_primary_screen(output)
+}
+
+fn restore_primary_screen(output: &mut impl Write) -> io::Result<()> {
+    execute!(output, Show, LeaveAlternateScreen)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -379,6 +385,20 @@ mod tests {
         assert_eq!(
             mapper.target(event, layout(), true),
             MouseTarget::Canvas(Point::new(0.99375, 0.97619045))
+        );
+    }
+
+    #[test]
+    fn leaving_restores_the_saved_primary_cursor() {
+        let mut output = Vec::new();
+        restore_primary_screen(&mut output).unwrap();
+
+        assert!(output.ends_with(b"\x1b[?1049l"));
+        assert!(
+            !output
+                .windows(b"\x1b[1;1H".len())
+                .any(|bytes| bytes == b"\x1b[1;1H"),
+            "a cursor-home command after rmcup moves the shell prompt to the top"
         );
     }
 
