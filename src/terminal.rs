@@ -237,6 +237,7 @@ fn detect_mouse_mode(_output: &mut impl Write) -> CoordinateMode {
 }
 
 /// Parameter and intermediate bytes of the longest reply worth keeping.
+#[cfg(any(unix, test))]
 const PROBE_SEQUENCE_LIMIT: usize = 32;
 
 /// Terminal answers travel the same path as the drawing itself, so this budget covers a forwarded
@@ -284,11 +285,13 @@ fn read_mouse_mode_reply() -> CoordinateMode {
 
 /// Incremental scanner for the escape sequences that end the mouse-mode probe.
 #[derive(Debug, Default)]
+#[cfg(any(unix, test))]
 struct ProbeScanner {
     escape: bool,
     sequence: Option<Vec<u8>>,
 }
 
+#[cfg(any(unix, test))]
 impl ProbeScanner {
     fn advance(&mut self, byte: u8) -> Option<CoordinateMode> {
         match (&mut self.sequence, byte) {
@@ -321,6 +324,7 @@ impl ProbeScanner {
 }
 
 /// Decide the coordinate space from one complete control sequence.
+#[cfg(any(unix, test))]
 fn classify_probe_reply(sequence: &[u8], final_byte: u8) -> Option<CoordinateMode> {
     match final_byte {
         // DECRPM: CSI ? 1016 ; Ps $ y. Ps is 1 for set and 3 for permanently set; 0 reports a mode

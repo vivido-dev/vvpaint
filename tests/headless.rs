@@ -43,7 +43,7 @@ impl Session {
             "--session",
             "vvpaint-smoke",
             "--headless-size",
-            "800x500px",
+            "800x600px",
             "--hold",
         ]);
         command
@@ -157,9 +157,9 @@ fn draws_resizes_presents_and_exports() {
         "mouse",
         "down",
         "--cell-column",
-        "12",
+        "16",
         "--cell-row",
-        "26",
+        "28",
         "--route",
         "ui",
     ]);
@@ -167,9 +167,9 @@ fn draws_resizes_presents_and_exports() {
         "mouse",
         "up",
         "--cell-column",
-        "12",
+        "16",
         "--cell-row",
-        "26",
+        "28",
         "--route",
         "ui",
     ]);
@@ -178,9 +178,9 @@ fn draws_resizes_presents_and_exports() {
         "mouse",
         "down",
         "--cell-column",
-        "35",
+        "44",
         "--cell-row",
-        "27",
+        "29",
         "--route",
         "ui",
     ]);
@@ -188,9 +188,9 @@ fn draws_resizes_presents_and_exports() {
         "mouse",
         "up",
         "--cell-column",
-        "35",
+        "44",
         "--cell-row",
-        "27",
+        "29",
         "--route",
         "ui",
     ]);
@@ -199,8 +199,15 @@ fn draws_resizes_presents_and_exports() {
     session.checked_msg(&["mouse", "down", "--x", "60", "--y", "60", "--route", "ui"]);
     session.checked_msg(&["mouse", "drag", "--x", "260", "--y", "180", "--route", "ui"]);
     session.checked_msg(&["mouse", "up", "--x", "260", "--y", "180", "--route", "ui"]);
-    session.checked_msg(&["resize", "--width", "900", "--height", "600"]);
+    session.checked_msg(&["resize", "--width", "900", "--height", "700"]);
     thread::sleep(Duration::from_millis(750));
+
+    let text = session.checked_msg(&["get-text"]);
+    assert_eq!(
+        text.matches("Primary color: red").count(),
+        1,
+        "resize left stale status text behind: {text:?}"
+    );
 
     let screenshot = PathBuf::from(session.checked_msg(&["screenshot"]).trim());
     assert_nonblank_png(&screenshot);

@@ -298,7 +298,7 @@ fn event_loop(
     let mut output = io::stdout().lock();
     let mut mapper = terminal.mouse_mapper();
     let mut captured: Option<MouseButton> = None;
-    render_ui(&mut output, state, canvas, *layout)?;
+    render_ui(&mut output, state, canvas, *layout, false)?;
     loop {
         while let Some(event) = handle.try_event() {
             match event {
@@ -307,7 +307,7 @@ fn event_loop(
                     canvas.resize(next.backing_width, next.backing_height);
                     mapper = terminal.mouse_mapper();
                     handle.publish(canvas.render())?;
-                    render_ui(&mut output, state, canvas, *layout)?;
+                    render_ui(&mut output, state, canvas, *layout, true)?;
                 }
                 vivid::Event::Error(error) => return Err(anyhow!(error)),
                 vivid::Event::Closed => return Err(anyhow!("Vivid presenter connection closed")),
@@ -342,7 +342,7 @@ fn event_loop(
         }
         if redraw {
             handle.publish(canvas.render())?;
-            render_ui(&mut output, state, canvas, *layout)?;
+            render_ui(&mut output, state, canvas, *layout, false)?;
         }
     }
 }
@@ -577,7 +577,11 @@ fn render_ui<W: Write>(
     state: &State,
     canvas: &DrawingCanvas,
     layout: Layout,
+    clear_screen: bool,
 ) -> Result<()> {
+    if clear_screen {
+        queue!(output, Clear(ClearType::All))?;
+    }
     for index in 0..2 {
         if let Some(row) = layout.toolbar_row(index) {
             queue!(output, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
@@ -938,18 +942,18 @@ fn tool_label(tool: Tool) -> &'static str {
 
 fn tool_icon(tool: Tool) -> &'static str {
     match tool {
-        Tool::Eraser => "\u{1f9fc}",              // soap
-        Tool::Fill => "\u{1faa3}",                // bucket
-        Tool::Picker => "\u{1f9ea}",              // test tube
-        Tool::Pencil => "\u{270f}",       // pencil
-        Tool::Brush => "\u{1f58c}",       // paintbrush
-        Tool::Airbrush => "\u{1f4a8}",            // dashing away
-        Tool::Text => "\u{1f524}",                // input Latin letters
-        Tool::Line => "\u{1f4cf}",                // straight ruler
-        Tool::Rectangle => "\u{f0e5f}",           // Material Design rectangle-outline
-        Tool::Ellipse => "\u{f0ea1}",             // Material Design ellipse-outline
-        Tool::RoundedRectangle => "\u{f14fc}",    // Material Design square-rounded-outline
-        Tool::Highlighter => "\u{1f58d}", // crayon
+        Tool::Eraser => "\u{1f9fc}",           // soap
+        Tool::Fill => "\u{1faa3}",             // bucket
+        Tool::Picker => "\u{1f9ea}",           // test tube
+        Tool::Pencil => "\u{270f}",            // pencil
+        Tool::Brush => "\u{1f58c}",            // paintbrush
+        Tool::Airbrush => "\u{1f4a8}",         // dashing away
+        Tool::Text => "\u{1f524}",             // input Latin letters
+        Tool::Line => "\u{1f4cf}",             // straight ruler
+        Tool::Rectangle => "\u{f0e5f}",        // Material Design rectangle-outline
+        Tool::Ellipse => "\u{f0ea1}",          // Material Design ellipse-outline
+        Tool::RoundedRectangle => "\u{f14fc}", // Material Design square-rounded-outline
+        Tool::Highlighter => "\u{1f58d}",      // crayon
     }
 }
 
@@ -999,6 +1003,30 @@ mod tests {
         let canvas = DrawingCanvas::blank(100, 50, Theme::Light);
         let state = State::new(&canvas, ExportFormat::Png, ExportSize::Canvas);
         (canvas, state)
+    }
+
+    fn layout() -> Layout {
+        Layout {
+            columns: 80,
+            rows: 24,
+            canvas_rows: 21,
+            viewport_width: 800,
+            viewport_height: 480,
+            grid_origin_x: 0,
+            grid_origin_y: 0,
+            cell_width: 10,
+            cell_height: 20,
+            backing_width: 800,
+            backing_height: 420,
+        }
+    }
+
+    #[test]
+    fn resize_redraw_clears_stale_ui_rows() {
+        let (canvas, state) = state();
+        let mut output = Vec::new();
+        render_ui(&mut output, &state, &canvas, layout(), true).unwrap();
+        assert!(output.starts_with(b"\x1b[2J"));
     }
 
     #[test]
