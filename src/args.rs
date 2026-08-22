@@ -32,7 +32,7 @@ pub struct Args {
     pub theme: ThemeArg,
 
     /// Raster backing scale relative to the presenter's physical canvas.
-    #[arg(long, default_value_t = 0.5, value_parser = parse_resolution_scale)]
+    #[arg(long, default_value_t = 1.0, value_parser = parse_resolution_scale)]
     pub resolution_scale: f32,
 }
 
@@ -148,6 +148,12 @@ mod tests {
         assert_eq!(args.input_image.as_deref(), Some(Path::new("in.jpg")));
         assert_eq!(args.output.as_deref(), Some(Path::new("out.svg")));
         assert_eq!(args.resolution_scale, 0.25);
+    }
+
+    #[test]
+    fn defaults_to_native_presenter_resolution() {
+        let args = Args::try_parse_from(["vvpaint"]).unwrap();
+        assert_eq!(args.resolution_scale, 1.0);
     }
 
     #[test]

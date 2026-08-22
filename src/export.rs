@@ -6,7 +6,8 @@ use clap::ValueEnum;
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 
 use crate::canvas::{
-    BaseSource, DrawingCanvas, Element, Point, RenderSizing, Style, annotation_font_bytes,
+    BaseSource, DrawingCanvas, Element, Point, RenderSizing, Style, WidthPreset,
+    annotation_font_bytes, for_each_airbrush_dot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -162,6 +163,14 @@ fn write_element(
     sizing: RenderSizing,
 ) {
     match element {
+        Element::Pencil { points, color } => write_path(
+            output,
+            points,
+            Style::opaque(*color, WidthPreset::Medium),
+            width,
+            height,
+            sizing.pencil_width,
+        ),
         Element::Stroke { points, style } => write_path(
             output,
             points,
@@ -170,6 +179,14 @@ fn write_element(
             height,
             sizing.radius(*style) * 2.0,
         ),
+        Element::Airbrush { points, style } => {
+            for_each_airbrush_dot(points, *style, sizing, width, height, |x, y, radius| {
+                output.push_str(&format!(
+                        "<circle cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"{radius:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\"/>\n",
+                        color(style.color), style.opacity
+                    ));
+            });
+        }
         Element::Highlighter { points, style } => write_path(
             output,
             points,
@@ -197,29 +214,14 @@ fn write_element(
             let (x2, y2) = svg_point(*end, width, height);
             output.push_str(&format!("<ellipse cx=\"{:.2}\" cy=\"{:.2}\" rx=\"{:.2}\" ry=\"{:.2}\" fill=\"none\" {} />\n", (x1+x2)*0.5, (y1+y2)*0.5, (x2-x1).abs()*0.5, (y2-y1).abs()*0.5, stroke(*style, sizing.radius(*style)*2.0)));
         }
-        Element::Arrow { start, end, style } => {
-            write_line(
-                output,
-                *start,
-                *end,
-                *style,
-                width,
-                height,
-                sizing.radius(*style) * 2.0,
-            );
-            let (sx, sy) = svg_point(*start, width, height);
-            let (ex, ey) = svg_point(*end, width, height);
-            let length = (ex - sx).hypot(ey - sy);
-            if length > 0.5 {
-                let ux = (ex - sx) / length;
-                let uy = (ey - sy) / length;
-                let radius = sizing.radius(*style);
-                let head = (radius * 7.0).max(8.0);
-                let wing = (radius * 4.5).max(5.0);
-                let bx = ex - ux * head;
-                let by = ey - uy * head;
-                output.push_str(&format!("<polygon points=\"{ex:.2},{ey:.2} {:.2},{:.2} {:.2},{:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\"/>\n", bx-uy*wing,by+ux*wing,bx+uy*wing,by-ux*wing,color(style.color),style.opacity));
-            }
+        Element::RoundedRectangle { start, end, style } => {
+            let (x1, y1) = svg_point(*start, width, height);
+            let (x2, y2) = svg_point(*end, width, height);
+            let rectangle_width = (x2 - x1).abs();
+            let rectangle_height = (y2 - y1).abs();
+            let corner =
+                (rectangle_width.min(rectangle_height) * 0.2).min(sizing.radius(*style) * 16.0);
+            output.push_str(&format!("<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{rectangle_width:.2}\" height=\"{rectangle_height:.2}\" rx=\"{corner:.2}\" ry=\"{corner:.2}\" fill=\"none\" {} />\n", x1.min(x2), y1.min(y2), stroke(*style, sizing.radius(*style)*2.0)));
         }
         Element::Text {
             position,
@@ -229,7 +231,7 @@ fn write_element(
             let (x, y) = svg_point(*position, width, height);
             output.push_str(&format!("<text x=\"{x:.2}\" y=\"{y:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\" font-family=\"vvpaint Noto Sans, sans-serif\" font-size=\"{:.2}\" dominant-baseline=\"hanging\">{}</text>\n", color(style.color),style.opacity,sizing.text_size(*style),escape_xml(text)));
         }
-        Element::Redaction { .. } | Element::FloodFill { .. } => {
+        Element::FloodFill { .. } => {
             unreachable!("raster-only elements are handled before vector export")
         }
     }
@@ -332,15 +334,21 @@ mod tests {
         let style = Style::opaque(Rgba([255, 0, 0, 255]), WidthPreset::Medium);
         let mut canvas = DrawingCanvas::blank(80, 40, Theme::Light);
         canvas.add_text(Point::new(0.2, 0.2), "A&B".into(), style);
+        canvas.begin(Tool::Airbrush, Point::new(0.1, 0.7), style);
+        canvas.extend(Point::new(0.3, 0.7));
+        canvas.finish();
+        canvas.begin(Tool::RoundedRectangle, Point::new(0.5, 0.5), style);
+        canvas.extend(Point::new(0.9, 0.9));
+        canvas.finish();
         let vector = temporary("vector.svg");
         save(&vector, ExportFormat::Svg, ExportSize::Canvas, &canvas).unwrap();
         let svg = std::fs::read_to_string(&vector).unwrap();
         let _ = std::fs::remove_file(&vector);
         assert!(svg.contains("<text"));
         assert!(svg.contains("A&amp;B"));
-        canvas.begin(Tool::Redaction, Point::new(0.1, 0.1), style);
-        canvas.extend(Point::new(0.9, 0.9));
-        canvas.finish();
+        assert!(svg.contains("<circle"));
+        assert!(svg.contains(" rx="));
+        canvas.fill(Point::new(0.1, 0.1), Rgba([0, 255, 0, 255]));
         let raster = temporary("raster.svg");
         save(&raster, ExportFormat::Svg, ExportSize::Canvas, &canvas).unwrap();
         let svg = std::fs::read_to_string(&raster).unwrap();

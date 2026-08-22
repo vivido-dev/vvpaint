@@ -16,7 +16,7 @@ use crossterm::{
 
 use crate::canvas::Point;
 
-pub const RESERVED_UI_ROWS: u32 = 2;
+pub const RESERVED_UI_ROWS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -34,13 +34,14 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn status_row(self) -> Option<u16> {
-        (self.rows > self.canvas_rows).then(|| u16::try_from(self.canvas_rows).unwrap_or(u16::MAX))
+    pub fn toolbar_row(self, index: u32) -> Option<u16> {
+        (index < 2 && self.rows > self.canvas_rows + index)
+            .then(|| u16::try_from(self.canvas_rows + index).unwrap_or(u16::MAX))
     }
 
-    pub fn input_row(self) -> Option<u16> {
-        (self.rows > self.canvas_rows + 1)
-            .then(|| u16::try_from(self.canvas_rows + 1).unwrap_or(u16::MAX))
+    pub fn message_row(self) -> Option<u16> {
+        (self.rows > self.canvas_rows + 2)
+            .then(|| u16::try_from(self.canvas_rows + 2).unwrap_or(u16::MAX))
     }
 
     pub fn canvas_display_width(self) -> u32 {
@@ -90,17 +91,23 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let mut output = io::stdout();
-        let _ = execute!(
-            output,
-            Show,
-            Print("\x1b[?1016l"),
-            DisableMouseCapture,
-            LeaveAlternateScreen,
-            MoveTo(0, 0)
-        );
+        let _ = leave_terminal(&mut output);
         let _ = output.flush();
         let _ = disable_raw_mode();
     }
+}
+
+/// Restore the primary screen and the cursor position saved by DECSET 1049.
+///
+/// No cursor movement may follow `LeaveAlternateScreen`: doing so would replace the restored
+/// shell position and put the next prompt at the top of the window.
+fn leave_terminal(output: &mut impl Write) -> io::Result<()> {
+    execute!(output, Print("\x1b[?1016l"), DisableMouseCapture)?;
+    restore_primary_screen(output)
+}
+
+fn restore_primary_screen(output: &mut impl Write) -> io::Result<()> {
+    execute!(output, Show, LeaveAlternateScreen)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,8 +119,7 @@ enum CoordinateMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MouseTarget {
     Canvas(Point),
-    Status(u16),
-    Input,
+    Ui { row: u16, column: u16 },
     None,
 }
 
@@ -152,10 +158,11 @@ impl MouseMapper {
                 (y as f32 + 0.5) / layout.canvas_rows.max(1) as f32,
             ));
         }
-        if Some(event.row) == layout.status_row() {
-            MouseTarget::Status(event.column)
-        } else if Some(event.row) == layout.input_row() {
-            MouseTarget::Input
+        if row < layout.rows {
+            MouseTarget::Ui {
+                row: u16::try_from(row.saturating_sub(layout.canvas_rows)).unwrap_or(u16::MAX),
+                column: event.column,
+            }
         } else {
             MouseTarget::None
         }
@@ -186,10 +193,11 @@ impl MouseMapper {
             .saturating_sub(layout.grid_origin_x)
             .checked_div(layout.cell_width.max(1))
             .unwrap_or(0);
-        if row == layout.canvas_rows {
-            MouseTarget::Status(u16::try_from(column).unwrap_or(u16::MAX))
-        } else if row == layout.canvas_rows + 1 {
-            MouseTarget::Input
+        if row >= layout.canvas_rows && row < layout.rows {
+            MouseTarget::Ui {
+                row: u16::try_from(row - layout.canvas_rows).unwrap_or(u16::MAX),
+                column: u16::try_from(column).unwrap_or(u16::MAX),
+            }
         } else {
             MouseTarget::None
         }
@@ -235,6 +243,7 @@ fn detect_mouse_mode(_output: &mut impl Write) -> CoordinateMode {
 }
 
 /// Parameter and intermediate bytes of the longest reply worth keeping.
+#[cfg(any(unix, test))]
 const PROBE_SEQUENCE_LIMIT: usize = 32;
 
 /// Terminal answers travel the same path as the drawing itself, so this budget covers a forwarded
@@ -282,11 +291,13 @@ fn read_mouse_mode_reply() -> CoordinateMode {
 
 /// Incremental scanner for the escape sequences that end the mouse-mode probe.
 #[derive(Debug, Default)]
+#[cfg(any(unix, test))]
 struct ProbeScanner {
     escape: bool,
     sequence: Option<Vec<u8>>,
 }
 
+#[cfg(any(unix, test))]
 impl ProbeScanner {
     fn advance(&mut self, byte: u8) -> Option<CoordinateMode> {
         match (&mut self.sequence, byte) {
@@ -319,6 +330,7 @@ impl ProbeScanner {
 }
 
 /// Decide the coordinate space from one complete control sequence.
+#[cfg(any(unix, test))]
 fn classify_probe_reply(sequence: &[u8], final_byte: u8) -> Option<CoordinateMode> {
     match final_byte {
         // DECRPM: CSI ? 1016 ; Ps $ y. Ps is 1 for set and 3 for permanently set; 0 reports a mode
@@ -347,7 +359,7 @@ mod tests {
         Layout {
             columns: 80,
             rows: 24,
-            canvas_rows: 22,
+            canvas_rows: 21,
             viewport_width: 800,
             viewport_height: 480,
             grid_origin_x: 0,
@@ -372,7 +384,21 @@ mod tests {
         };
         assert_eq!(
             mapper.target(event, layout(), true),
-            MouseTarget::Canvas(Point::new(0.99375, 0.97727275))
+            MouseTarget::Canvas(Point::new(0.99375, 0.97619045))
+        );
+    }
+
+    #[test]
+    fn leaving_restores_the_saved_primary_cursor() {
+        let mut output = Vec::new();
+        restore_primary_screen(&mut output).unwrap();
+
+        assert!(output.ends_with(b"\x1b[?1049l"));
+        assert!(
+            !output
+                .windows(b"\x1b[1;1H".len())
+                .any(|bytes| bytes == b"\x1b[1;1H"),
+            "a cursor-home command after rmcup moves the shell prompt to the top"
         );
     }
 
@@ -431,12 +457,12 @@ mod tests {
         let event = MouseEvent {
             kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
             column: 3,
-            row: 22,
+            row: 21,
             modifiers: KeyModifiers::NONE,
         };
         assert_eq!(
             mapper.target(event, layout(), false),
-            MouseTarget::Status(3)
+            MouseTarget::Ui { row: 0, column: 3 }
         );
     }
 }

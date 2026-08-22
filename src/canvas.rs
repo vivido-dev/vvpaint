@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::OnceLock};
 
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
-use image::{DynamicImage, Rgba, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, GrayImage, Luma, Rgba, RgbaImage, imageops::FilterType};
 
 use crate::theme::Theme;
 
@@ -29,17 +29,67 @@ impl Point {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
-    Freehand,
-    Line,
-    Rectangle,
-    Ellipse,
-    Arrow,
-    Text,
-    Highlighter,
-    Redaction,
     Eraser,
     Fill,
     Picker,
+    Pencil,
+    Brush,
+    Airbrush,
+    Text,
+    Line,
+    Rectangle,
+    Ellipse,
+    RoundedRectangle,
+    Highlighter,
+}
+
+impl Tool {
+    pub const ALL: [Self; 12] = [
+        Self::Eraser,
+        Self::Fill,
+        Self::Picker,
+        Self::Pencil,
+        Self::Brush,
+        Self::Airbrush,
+        Self::Text,
+        Self::Line,
+        Self::Rectangle,
+        Self::Ellipse,
+        Self::RoundedRectangle,
+        Self::Highlighter,
+    ];
+    pub const COUNT: usize = Self::ALL.len();
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Eraser => 0,
+            Self::Fill => 1,
+            Self::Picker => 2,
+            Self::Pencil => 3,
+            Self::Brush => 4,
+            Self::Airbrush => 5,
+            Self::Text => 6,
+            Self::Line => 7,
+            Self::Rectangle => 8,
+            Self::Ellipse => 9,
+            Self::RoundedRectangle => 10,
+            Self::Highlighter => 11,
+        }
+    }
+
+    pub const fn supports_width(self) -> bool {
+        matches!(
+            self,
+            Self::Eraser
+                | Self::Brush
+                | Self::Airbrush
+                | Self::Line
+                | Self::Rectangle
+                | Self::Ellipse
+                | Self::RoundedRectangle
+                | Self::Highlighter
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +100,8 @@ pub enum WidthPreset {
 }
 
 impl WidthPreset {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
+
     pub fn previous(self) -> Self {
         match self {
             Self::Small => Self::Large,
@@ -124,7 +176,15 @@ pub enum BaseSource {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Element {
+    Pencil {
+        points: Vec<Point>,
+        color: Rgba<u8>,
+    },
     Stroke {
+        points: Vec<Point>,
+        style: Style,
+    },
+    Airbrush {
         points: Vec<Point>,
         style: Style,
     },
@@ -147,7 +207,7 @@ pub enum Element {
         end: Point,
         style: Style,
     },
-    Arrow {
+    RoundedRectangle {
         start: Point,
         end: Point,
         style: Style,
@@ -156,10 +216,6 @@ pub enum Element {
         position: Point,
         text: String,
         style: Style,
-    },
-    Redaction {
-        start: Point,
-        end: Point,
     },
     FloodFill {
         point: Point,
@@ -194,6 +250,7 @@ impl FitRect {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderSizing {
+    pub pencil_width: f32,
     pub stroke_radius: f32,
     pub text_size: f32,
 }
@@ -201,6 +258,7 @@ pub struct RenderSizing {
 impl RenderSizing {
     pub fn scaled(self, scale: f32) -> Self {
         Self {
+            pencil_width: self.pencil_width * scale,
             stroke_radius: self.stroke_radius * scale,
             text_size: self.text_size * scale,
         }
@@ -268,6 +326,7 @@ impl DrawingCanvas {
     pub fn sizing(&self) -> RenderSizing {
         let unit = (self.width as f32 / 80.0).min(self.height as f32 / 22.0);
         RenderSizing {
+            pencil_width: 1.0,
             stroke_radius: (unit * 0.175).max(0.75),
             text_size: (self.height as f32 / 22.0 * 1.1).max(6.0),
         }
@@ -287,7 +346,15 @@ impl DrawingCanvas {
 
     pub fn begin(&mut self, tool: Tool, point: Point, style: Style) -> bool {
         self.current = match tool {
-            Tool::Freehand | Tool::Eraser => Some(Element::Stroke {
+            Tool::Pencil => Some(Element::Pencil {
+                points: vec![point],
+                color: style.color,
+            }),
+            Tool::Brush | Tool::Eraser => Some(Element::Stroke {
+                points: vec![point],
+                style,
+            }),
+            Tool::Airbrush => Some(Element::Airbrush {
                 points: vec![point],
                 style,
             }),
@@ -310,14 +377,10 @@ impl DrawingCanvas {
                 end: point,
                 style,
             }),
-            Tool::Arrow => Some(Element::Arrow {
+            Tool::RoundedRectangle => Some(Element::RoundedRectangle {
                 start: point,
                 end: point,
                 style,
-            }),
-            Tool::Redaction => Some(Element::Redaction {
-                start: point,
-                end: point,
             }),
             Tool::Text | Tool::Fill | Tool::Picker => None,
         };
@@ -326,7 +389,12 @@ impl DrawingCanvas {
 
     pub fn extend(&mut self, point: Point) -> bool {
         match self.current.as_mut() {
-            Some(Element::Stroke { points, .. } | Element::Highlighter { points, .. }) => {
+            Some(
+                Element::Pencil { points, .. }
+                | Element::Stroke { points, .. }
+                | Element::Airbrush { points, .. }
+                | Element::Highlighter { points, .. },
+            ) => {
                 if points.last().copied() != Some(point) {
                     points.push(point);
                 }
@@ -335,8 +403,7 @@ impl DrawingCanvas {
                 Element::Line { end, .. }
                 | Element::Rectangle { end, .. }
                 | Element::Ellipse { end, .. }
-                | Element::Arrow { end, .. }
-                | Element::Redaction { end, .. },
+                | Element::RoundedRectangle { end, .. },
             ) => *end = point,
             Some(Element::Text { .. } | Element::FloodFill { .. }) | None => return false,
         }
@@ -486,12 +553,9 @@ impl DrawingCanvas {
     }
 
     pub fn requires_raster_svg(&self) -> bool {
-        self.active_elements().iter().any(|element| {
-            matches!(
-                element,
-                Element::Redaction { .. } | Element::FloodFill { .. }
-            )
-        })
+        self.active_elements()
+            .iter()
+            .any(|element| matches!(element, Element::FloodFill { .. }))
     }
 
     fn commit(&mut self, operation: Operation) -> bool {
@@ -561,7 +625,15 @@ fn render_base(
 
 fn transform_element(element: &Element, fit: FitRect) -> Element {
     match element {
+        Element::Pencil { points, color } => Element::Pencil {
+            points: points.iter().map(|point| point.transformed(fit)).collect(),
+            color: *color,
+        },
         Element::Stroke { points, style } => Element::Stroke {
+            points: points.iter().map(|point| point.transformed(fit)).collect(),
+            style: *style,
+        },
+        Element::Airbrush { points, style } => Element::Airbrush {
             points: points.iter().map(|point| point.transformed(fit)).collect(),
             style: *style,
         },
@@ -584,7 +656,7 @@ fn transform_element(element: &Element, fit: FitRect) -> Element {
             end: end.transformed(fit),
             style: *style,
         },
-        Element::Arrow { start, end, style } => Element::Arrow {
+        Element::RoundedRectangle { start, end, style } => Element::RoundedRectangle {
             start: start.transformed(fit),
             end: end.transformed(fit),
             style: *style,
@@ -598,10 +670,6 @@ fn transform_element(element: &Element, fit: FitRect) -> Element {
             text: text.clone(),
             style: *style,
         },
-        Element::Redaction { start, end } => Element::Redaction {
-            start: start.transformed(fit),
-            end: end.transformed(fit),
-        },
         Element::FloodFill { point, color } => Element::FloodFill {
             point: point.transformed(fit),
             color: *color,
@@ -611,11 +679,15 @@ fn transform_element(element: &Element, fit: FitRect) -> Element {
 
 fn draw_element(image: &mut RgbaImage, element: &Element, sizing: RenderSizing) {
     match element {
+        Element::Pencil { points, color } => {
+            draw_pencil_path(image, points, *color, sizing.pencil_width)
+        }
         Element::Stroke { points, style } => {
             draw_path(image, points, *style, sizing.radius(*style))
         }
+        Element::Airbrush { points, style } => draw_airbrush(image, points, *style, sizing),
         Element::Highlighter { points, style } => {
-            draw_path(image, points, *style, sizing.radius(*style) * 3.2)
+            draw_highlighter(image, points, *style, sizing.radius(*style) * 3.2)
         }
         Element::Line { start, end, style } => {
             draw_segment(image, *start, *end, *style, sizing.radius(*style))
@@ -626,28 +698,148 @@ fn draw_element(image: &mut RgbaImage, element: &Element, sizing: RenderSizing) 
         Element::Ellipse { start, end, style } => {
             draw_ellipse(image, *start, *end, *style, sizing.radius(*style))
         }
-        Element::Arrow { start, end, style } => {
-            draw_arrow(image, *start, *end, *style, sizing.radius(*style))
+        Element::RoundedRectangle { start, end, style } => {
+            draw_rounded_rectangle(image, *start, *end, *style, sizing.radius(*style))
         }
         Element::Text {
             position,
             text,
             style,
         } => draw_text(image, *position, text, *style, sizing.text_size(*style)),
-        Element::Redaction { start, end } => {
-            fill_rectangle(image, *start, *end, Rgba([0, 0, 0, 255]), 1.0)
-        }
         Element::FloodFill { point, color } => flood_fill(image, *point, *color),
     }
 }
 
+fn draw_pencil_path(image: &mut RgbaImage, points: &[Point], color: Rgba<u8>, width: f32) {
+    if width > 1.0 {
+        draw_path(
+            image,
+            points,
+            Style::opaque(color, WidthPreset::Medium),
+            width * 0.5,
+        );
+        return;
+    }
+    let Some(first) = points.first().copied() else {
+        return;
+    };
+    let (mut previous_x, mut previous_y) = pixel(first, image.width(), image.height());
+    *image.get_pixel_mut(previous_x, previous_y) = color;
+    for point in &points[1..] {
+        let (next_x, next_y) = pixel(*point, image.width(), image.height());
+        draw_pixel_line(image, previous_x, previous_y, next_x, next_y, color);
+        (previous_x, previous_y) = (next_x, next_y);
+    }
+}
+
+fn draw_pixel_line(
+    image: &mut RgbaImage,
+    start_x: u32,
+    start_y: u32,
+    end_x: u32,
+    end_y: u32,
+    color: Rgba<u8>,
+) {
+    let (mut x, mut y) = (i64::from(start_x), i64::from(start_y));
+    let (end_x, end_y) = (i64::from(end_x), i64::from(end_y));
+    let dx = (end_x - x).abs();
+    let step_x = if x < end_x { 1 } else { -1 };
+    let dy = -(end_y - y).abs();
+    let step_y = if y < end_y { 1 } else { -1 };
+    let mut error = dx + dy;
+    loop {
+        if let (Ok(px), Ok(py)) = (u32::try_from(x), u32::try_from(y)) {
+            *image.get_pixel_mut(px, py) = color;
+        }
+        if x == end_x && y == end_y {
+            break;
+        }
+        let doubled = error.saturating_mul(2);
+        if doubled >= dy {
+            error += dy;
+            x += step_x;
+        }
+        if doubled <= dx {
+            error += dx;
+            y += step_y;
+        }
+    }
+}
+
+fn draw_airbrush(image: &mut RgbaImage, points: &[Point], style: Style, sizing: RenderSizing) {
+    for_each_airbrush_dot(
+        points,
+        style,
+        sizing,
+        image.width(),
+        image.height(),
+        |x, y, radius| stamp_xy(image, x, y, style, radius),
+    );
+}
+
+pub(crate) fn for_each_airbrush_dot(
+    points: &[Point],
+    style: Style,
+    sizing: RenderSizing,
+    width: u32,
+    height: u32,
+    mut draw: impl FnMut(f32, f32, f32),
+) {
+    let Some(first) = points.first().copied() else {
+        return;
+    };
+    let spray_radius = sizing.radius(style) * 3.2;
+    let spacing = (spray_radius * 0.45).max(1.0);
+    let dots = ((spray_radius * spray_radius * 0.7).ceil() as u32).clamp(6, 64);
+    let mut sample_index = 0_u64;
+    let mut emit = |x: f32, y: f32, sample: u64| {
+        for dot in 0..dots {
+            let first_hash = scatter_hash(sample, u64::from(dot));
+            let second_hash = scatter_hash(first_hash, u64::from(dot) ^ 0x9e37_79b9);
+            let angle = hash_fraction(first_hash) * std::f32::consts::TAU;
+            let distance = hash_fraction(second_hash).sqrt() * spray_radius;
+            draw(x + angle.cos() * distance, y + angle.sin() * distance, 0.65);
+        }
+    };
+    let (mut previous_x, mut previous_y) = float_pixel(first, width, height);
+    emit(previous_x, previous_y, sample_index);
+    sample_index = sample_index.wrapping_add(1);
+    for point in &points[1..] {
+        let (next_x, next_y) = float_pixel(*point, width, height);
+        let distance = (next_x - previous_x).hypot(next_y - previous_y);
+        let steps = (distance / spacing).ceil().max(1.0) as u32;
+        for step in 1..=steps {
+            let amount = step as f32 / steps as f32;
+            emit(
+                previous_x + (next_x - previous_x) * amount,
+                previous_y + (next_y - previous_y) * amount,
+                sample_index,
+            );
+            sample_index = sample_index.wrapping_add(1);
+        }
+        (previous_x, previous_y) = (next_x, next_y);
+    }
+}
+
+fn scatter_hash(sample: u64, dot: u64) -> u64 {
+    let mut value = sample
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(dot.wrapping_mul(0xbf58_476d_1ce4_e5b9))
+        .wrapping_add(0x94d0_49bb_1331_11eb);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value.wrapping_mul(0x94d0_49bb_1331_11eb) ^ (value >> 31)
+}
+
+fn hash_fraction(value: u64) -> f32 {
+    (value >> 40) as f32 / (1_u32 << 24) as f32
+}
+
 fn draw_path(image: &mut RgbaImage, points: &[Point], style: Style, radius: f32) {
-    if let Some(first) = points.first().copied() {
-        stamp(image, first, style, radius);
-    }
-    for pair in points.windows(2) {
-        draw_segment(image, pair[0], pair[1], style, radius);
-    }
+    for_each_path_stamp(points, image.width(), image.height(), radius, |x, y| {
+        stamp_xy(image, x, y, style, radius)
+    });
 }
 
 fn draw_segment(image: &mut RgbaImage, start: Point, end: Point, style: Style, radius: f32) {
@@ -658,6 +850,45 @@ fn draw_segment(image: &mut RgbaImage, start: Point, end: Point, style: Style, r
     for index in 0..=steps {
         let t = index as f32 / steps as f32;
         stamp_xy(image, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, style, radius);
+    }
+}
+
+fn draw_highlighter(image: &mut RgbaImage, points: &[Point], style: Style, radius: f32) {
+    let mut coverage = GrayImage::new(image.width(), image.height());
+    for_each_path_stamp(points, image.width(), image.height(), radius, |x, y| {
+        stamp_mask_xy(&mut coverage, x, y, radius)
+    });
+    for (destination, coverage) in image.pixels_mut().zip(coverage.pixels()) {
+        if coverage[0] != 0 {
+            blend(destination, style.color, style.opacity);
+        }
+    }
+}
+
+fn for_each_path_stamp(
+    points: &[Point],
+    width: u32,
+    height: u32,
+    radius: f32,
+    mut draw: impl FnMut(f32, f32),
+) {
+    let Some(first) = points.first().copied() else {
+        return;
+    };
+    let (mut previous_x, mut previous_y) = float_pixel(first, width, height);
+    draw(previous_x, previous_y);
+    for point in &points[1..] {
+        let (next_x, next_y) = float_pixel(*point, width, height);
+        let distance = (next_x - previous_x).hypot(next_y - previous_y);
+        let steps = (distance / (radius * 0.5).max(0.5)).ceil().max(1.0) as u32;
+        for index in 1..=steps {
+            let amount = index as f32 / steps as f32;
+            draw(
+                previous_x + (next_x - previous_x) * amount,
+                previous_y + (next_y - previous_y) * amount,
+            );
+        }
+        (previous_x, previous_y) = (next_x, next_y);
     }
 }
 
@@ -698,86 +929,81 @@ fn draw_ellipse(image: &mut RgbaImage, start: Point, end: Point, style: Style, r
     }
 }
 
-fn draw_arrow(image: &mut RgbaImage, start: Point, end: Point, style: Style, radius: f32) {
-    draw_segment(image, start, end, style, radius);
-    let (sx, sy) = float_pixel(start, image.width(), image.height());
-    let (ex, ey) = float_pixel(end, image.width(), image.height());
-    let length = (ex - sx).hypot(ey - sy);
-    if length < 1.0 {
+fn draw_rounded_rectangle(
+    image: &mut RgbaImage,
+    start: Point,
+    end: Point,
+    style: Style,
+    radius: f32,
+) {
+    let (x1, y1) = float_pixel(start, image.width(), image.height());
+    let (x2, y2) = float_pixel(end, image.width(), image.height());
+    let (left, right) = (x1.min(x2), x1.max(x2));
+    let (top, bottom) = (y1.min(y2), y1.max(y2));
+    let corner = ((right - left).min(bottom - top) * 0.2)
+        .min(radius * 16.0)
+        .max(0.0);
+    if corner < 1.0 {
+        draw_rectangle(image, start, end, style, radius);
         return;
     }
-    let ux = (ex - sx) / length;
-    let uy = (ey - sy) / length;
-    let head = (radius * 7.0).max(8.0);
-    let wing = (radius * 4.5).max(5.0);
-    let base = (ex - ux * head, ey - uy * head);
-    fill_triangle(
-        image,
-        (ex, ey),
-        (base.0 - uy * wing, base.1 + ux * wing),
-        (base.0 + uy * wing, base.1 - ux * wing),
-        style,
-    );
-}
-
-fn fill_triangle(image: &mut RgbaImage, a: (f32, f32), b: (f32, f32), c: (f32, f32), style: Style) {
-    let min_x = a.0.min(b.0).min(c.0).floor().max(0.0) as u32;
-    let max_x =
-        a.0.max(b.0)
-            .max(c.0)
-            .ceil()
-            .min(image.width().saturating_sub(1) as f32) as u32;
-    let min_y = a.1.min(b.1).min(c.1).floor().max(0.0) as u32;
-    let max_y =
-        a.1.max(b.1)
-            .max(c.1)
-            .ceil()
-            .min(image.height().saturating_sub(1) as f32) as u32;
-    let edge = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| {
-        (r.0 - p.0) * (q.1 - p.1) - (r.1 - p.1) * (q.0 - p.0)
+    let point = |x: f32, y: f32| {
+        Point::new(
+            x / image.width().max(1) as f32,
+            y / image.height().max(1) as f32,
+        )
     };
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let p = (x as f32 + 0.5, y as f32 + 0.5);
-            let e = [edge(a, b, p), edge(b, c, p), edge(c, a, p)];
-            if e.iter().all(|value| *value >= 0.0) || e.iter().all(|value| *value <= 0.0) {
-                blend(image.get_pixel_mut(x, y), style.color, style.opacity);
-            }
+    let mut points = Vec::with_capacity(37);
+    let corners = [
+        (right - corner, top + corner, -std::f32::consts::FRAC_PI_2),
+        (right - corner, bottom - corner, 0.0),
+        (left + corner, bottom - corner, std::f32::consts::FRAC_PI_2),
+        (left + corner, top + corner, std::f32::consts::PI),
+    ];
+    for (center_x, center_y, start_angle) in corners {
+        for step in 0..=8 {
+            let angle = start_angle + std::f32::consts::FRAC_PI_2 * step as f32 / 8.0;
+            points.push(point(
+                center_x + corner * angle.cos(),
+                center_y + corner * angle.sin(),
+            ));
         }
     }
-}
-
-fn fill_rectangle(image: &mut RgbaImage, start: Point, end: Point, color: Rgba<u8>, opacity: f32) {
-    let (x1, y1) = pixel(start, image.width(), image.height());
-    let (x2, y2) = pixel(end, image.width(), image.height());
-    for y in y1.min(y2)..=y1.max(y2) {
-        for x in x1.min(x2)..=x1.max(x2) {
-            blend(image.get_pixel_mut(x, y), color, opacity);
-        }
-    }
-}
-
-fn stamp(image: &mut RgbaImage, point: Point, style: Style, radius: f32) {
-    let (x, y) = float_pixel(point, image.width(), image.height());
-    stamp_xy(image, x, y, style, radius);
+    points.push(points[0]);
+    draw_path(image, &points, style, radius);
 }
 
 fn stamp_xy(image: &mut RgbaImage, x: f32, y: f32, style: Style, radius: f32) {
+    for_each_stamp_pixel(image.width(), image.height(), x, y, radius, |px, py| {
+        blend(image.get_pixel_mut(px, py), style.color, style.opacity);
+    });
+}
+
+fn stamp_mask_xy(mask: &mut GrayImage, x: f32, y: f32, radius: f32) {
+    for_each_stamp_pixel(mask.width(), mask.height(), x, y, radius, |px, py| {
+        mask.put_pixel(px, py, Luma([u8::MAX]));
+    });
+}
+
+fn for_each_stamp_pixel(
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    radius: f32,
+    mut draw: impl FnMut(u32, u32),
+) {
     let min_x = (x - radius).floor().max(0.0) as u32;
-    let max_x = (x + radius)
-        .ceil()
-        .min(image.width().saturating_sub(1) as f32) as u32;
+    let max_x = (x + radius).ceil().min(width.saturating_sub(1) as f32) as u32;
     let min_y = (y - radius).floor().max(0.0) as u32;
-    let max_y = (y + radius)
-        .ceil()
-        .min(image.height().saturating_sub(1) as f32) as u32;
+    let max_y = (y + radius).ceil().min(height.saturating_sub(1) as f32) as u32;
     let radius2 = radius * radius;
     for py in min_y..=max_y {
         for px in min_x..=max_x {
             let dx = px as f32 + 0.5 - x;
             let dy = py as f32 + 0.5 - y;
             if dx * dx + dy * dy <= radius2 {
-                blend(image.get_pixel_mut(px, py), style.color, style.opacity);
+                draw(px, py);
             }
         }
     }
@@ -894,7 +1120,7 @@ mod tests {
     fn stroke_line_shapes_and_fill_are_deterministic() {
         let mut canvas = DrawingCanvas::blank(100, 50, Theme::Light);
         canvas.begin(
-            Tool::Freehand,
+            Tool::Brush,
             Point::new(0.1, 0.2),
             style(Rgba([255, 0, 0, 255])),
         );
@@ -938,14 +1164,35 @@ mod tests {
     }
 
     #[test]
+    fn highlighter_blends_each_stroke_once_over_existing_content() {
+        let mut canvas = DrawingCanvas::blank(100, 50, Theme::Light);
+        canvas.begin(
+            Tool::Brush,
+            Point::new(0.1, 0.5),
+            style(Rgba([0, 0, 0, 255])),
+        );
+        canvas.extend(Point::new(0.9, 0.5));
+        canvas.finish();
+
+        canvas.begin(
+            Tool::Highlighter,
+            Point::new(0.1, 0.5),
+            Style::highlighter(Rgba([255, 255, 0, 255]), WidthPreset::Medium),
+        );
+        canvas.extend(Point::new(0.9, 0.5));
+        canvas.finish();
+
+        assert_eq!(
+            canvas.color_at(Point::new(0.5, 0.5)),
+            Rgba([97, 97, 0, 255])
+        );
+    }
+
+    #[test]
     fn undo_redo_clear_and_branching_work() {
         let mut canvas = DrawingCanvas::blank(30, 20, Theme::Light);
         for y in [0.2, 0.4] {
-            canvas.begin(
-                Tool::Freehand,
-                Point::new(0.2, y),
-                style(Rgba([0, 0, 0, 255])),
-            );
+            canvas.begin(Tool::Brush, Point::new(0.2, y), style(Rgba([0, 0, 0, 255])));
             canvas.finish();
         }
         assert!(canvas.clear());
@@ -987,5 +1234,58 @@ mod tests {
         canvas.finish();
         canvas.resize(200, 100);
         assert_eq!(canvas.color_at(Point::new(0.5, 0.5)), Rgba([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn pencil_is_one_pixel_wide() {
+        let mut canvas = DrawingCanvas::blank(40, 20, Theme::Light);
+        canvas.begin(
+            Tool::Pencil,
+            Point::new(0.1, 0.5),
+            style(Rgba([0, 0, 0, 255])),
+        );
+        canvas.extend(Point::new(0.9, 0.5));
+        canvas.finish();
+        let image = canvas.render_canvas_export();
+        let painted_rows: Vec<u32> = (0..image.height())
+            .filter(|y| (0..image.width()).any(|x| image.get_pixel(x, *y)[0] == 0))
+            .collect();
+        assert_eq!(painted_rows, vec![10]);
+    }
+
+    #[test]
+    fn airbrush_is_deterministic_and_replays_after_resize() {
+        let mut canvas = DrawingCanvas::blank(80, 40, Theme::Light);
+        canvas.begin(
+            Tool::Airbrush,
+            Point::new(0.2, 0.4),
+            style(Rgba([255, 0, 0, 255])),
+        );
+        canvas.extend(Point::new(0.8, 0.6));
+        let preview = canvas.render();
+        assert_eq!(preview, canvas.render());
+        canvas.finish();
+        assert_eq!(preview, canvas.render_canvas_export());
+        canvas.resize(160, 80);
+        let resized = canvas.render_canvas_export();
+        canvas.resize(160, 80);
+        assert_eq!(resized, canvas.render_canvas_export());
+    }
+
+    #[test]
+    fn rounded_rectangle_keeps_rounded_corners() {
+        let mut canvas = DrawingCanvas::blank(100, 50, Theme::Light);
+        canvas.begin(
+            Tool::RoundedRectangle,
+            Point::new(0.2, 0.2),
+            style(Rgba([0, 0, 0, 255])),
+        );
+        canvas.extend(Point::new(0.8, 0.8));
+        canvas.finish();
+        assert_eq!(canvas.color_at(Point::new(0.5, 0.2)), Rgba([0, 0, 0, 255]));
+        assert_eq!(
+            canvas.color_at(Point::new(0.2, 0.2)),
+            Rgba([255, 255, 255, 255])
+        );
     }
 }

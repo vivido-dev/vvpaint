@@ -32,9 +32,7 @@ impl Session {
             "build the sibling Vivido debug binary first"
         );
 
-        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("headless-runtime-{}", std::process::id()));
+        let runtime = std::env::temp_dir().join(format!("vvpaint-headless-{}", std::process::id()));
         let _ = fs::remove_dir_all(&runtime);
         fs::create_dir_all(&runtime).expect("create private headless runtime");
 
@@ -45,7 +43,7 @@ impl Session {
             "--session",
             "vvpaint-smoke",
             "--headless-size",
-            "800x500px",
+            "800x600px",
             "--hold",
         ]);
         command
@@ -71,7 +69,7 @@ impl Session {
             runtime,
             socket,
         };
-        session.wait_for_text("f:freehand");
+        session.wait_for_text("Pencil");
         session
     }
 
@@ -153,11 +151,63 @@ fn draws_resizes_presents_and_exports() {
     let _ = fs::remove_file(&export);
     let session = Session::start(&export);
 
-    session.checked_msg(&["mouse", "down", "--x", "60", "--y", "60"]);
-    session.checked_msg(&["mouse", "drag", "--x", "260", "--y", "180"]);
-    session.checked_msg(&["mouse", "up", "--x", "260", "--y", "180"]);
-    session.checked_msg(&["resize", "--width", "900", "--height", "600"]);
+    // Select Brush from the first toolbar row and bright red from the second palette row. UI
+    // routing converts these stable grid cells through Vivido's normal pixel-mode input path.
+    session.checked_msg(&[
+        "mouse",
+        "down",
+        "--cell-column",
+        "16",
+        "--cell-row",
+        "28",
+        "--route",
+        "ui",
+    ]);
+    session.checked_msg(&[
+        "mouse",
+        "up",
+        "--cell-column",
+        "16",
+        "--cell-row",
+        "28",
+        "--route",
+        "ui",
+    ]);
+    session.wait_for_text("Brush");
+    session.checked_msg(&[
+        "mouse",
+        "down",
+        "--cell-column",
+        "44",
+        "--cell-row",
+        "29",
+        "--route",
+        "ui",
+    ]);
+    session.checked_msg(&[
+        "mouse",
+        "up",
+        "--cell-column",
+        "44",
+        "--cell-row",
+        "29",
+        "--route",
+        "ui",
+    ]);
+    session.wait_for_text("Primary color: red");
+
+    session.checked_msg(&["mouse", "down", "--x", "60", "--y", "60", "--route", "ui"]);
+    session.checked_msg(&["mouse", "drag", "--x", "260", "--y", "180", "--route", "ui"]);
+    session.checked_msg(&["mouse", "up", "--x", "260", "--y", "180", "--route", "ui"]);
+    session.checked_msg(&["resize", "--width", "900", "--height", "700"]);
     thread::sleep(Duration::from_millis(750));
+
+    let text = session.checked_msg(&["get-text"]);
+    assert_eq!(
+        text.matches("Primary color: red").count(),
+        1,
+        "resize left stale status text behind: {text:?}"
+    );
 
     let screenshot = PathBuf::from(session.checked_msg(&["screenshot"]).trim());
     assert_nonblank_png(&screenshot);
