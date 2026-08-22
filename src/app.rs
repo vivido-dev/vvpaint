@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsStr,
     io::{self, Write},
     path::PathBuf,
     time::Duration,
@@ -9,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 use crossterm::{
     cursor::{MoveTo, MoveToColumn},
     event::{
-        self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+        Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
         MouseEvent, MouseEventKind,
     },
     queue,
@@ -23,6 +22,7 @@ use crate::{
     canvas::{BaseSource, DrawingCanvas, Point, Style, Tool, WidthPreset},
     export::{self, ExportFormat, ExportSize},
     terminal::{Layout, MouseMapper, MouseTarget, TerminalSession},
+    terminal_input::InputReader,
     theme,
     vivid::{self, VividHandle},
 };
@@ -59,10 +59,6 @@ enum ColorTarget {
     Primary,
     Secondary,
 }
-
-/// Crossterm treats a read containing only `ESC` as an Escape key. A mouse report starts with the
-/// same byte, and an SSH transport may deliver the rest of that report in the next read.
-const REMOTE_ESCAPE_GRACE: Duration = Duration::from_millis(100);
 
 impl State {
     fn new(canvas: &DrawingCanvas, format: ExportFormat, export_size: ExportSize) -> Self {
@@ -303,8 +299,7 @@ fn event_loop(
     let mut output = io::stdout().lock();
     let mut mapper = terminal.mouse_mapper();
     let mut captured: Option<MouseButton> = None;
-    let remote_input =
-        std::env::var_os("VIVID_REMOTE").is_some_and(|value| value != OsStr::new("0"));
+    let mut input = InputReader::new();
     render_ui(&mut output, state, canvas, *layout, false)?;
     loop {
         while let Some(event) = handle.try_event() {
@@ -321,18 +316,15 @@ fn event_loop(
                 vivid::Event::Ready(_) | vivid::Event::Presented => {}
             }
         }
-        if !event::poll(Duration::from_millis(25))? {
+        if !input.poll(Duration::from_millis(25))? {
             continue;
         }
         let mut redraw = false;
         loop {
-            match event::read()? {
+            match input.read()? {
                 TerminalEvent::Key(key)
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                 {
-                    if !accept_key_event(key, remote_input, || event::poll(REMOTE_ESCAPE_GRACE))? {
-                        continue;
-                    }
                     let action = handle_key(key, canvas, state);
                     if action.quit {
                         return Ok(());
@@ -346,7 +338,7 @@ fn event_loop(
                 TerminalEvent::Resize(_, _) => {}
                 _ => {}
             }
-            if !event::poll(Duration::ZERO)? {
+            if !input.poll(Duration::ZERO)? {
                 break;
             }
         }
@@ -355,17 +347,6 @@ fn event_loop(
             render_ui(&mut output, state, canvas, *layout, false)?;
         }
     }
-}
-
-fn accept_key_event(
-    key: KeyEvent,
-    remote_input: bool,
-    followup_available: impl FnOnce() -> io::Result<bool>,
-) -> io::Result<bool> {
-    if remote_input && key.code == KeyCode::Esc {
-        return followup_available().map(|available| !available);
-    }
-    Ok(true)
 }
 
 #[derive(Default)]
@@ -1048,20 +1029,6 @@ mod tests {
         let mut output = Vec::new();
         render_ui(&mut output, &state, &canvas, layout(), true).unwrap();
         assert!(output.starts_with(b"\x1b[2J"));
-    }
-
-    #[test]
-    fn remote_split_escape_prefix_does_not_quit() {
-        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-
-        assert!(!accept_key_event(escape, true, || Ok(true)).unwrap());
-        assert!(accept_key_event(escape, true, || Ok(false)).unwrap());
-        assert!(
-            accept_key_event(escape, false, || {
-                panic!("local Escape must not wait for transport input")
-            })
-            .unwrap()
-        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ mod args;
 mod canvas;
 mod export;
 mod terminal;
+mod terminal_input;
 mod theme;
 mod vivid;
 

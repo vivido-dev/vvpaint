@@ -59,12 +59,16 @@ impl Layout {
 
 pub struct TerminalSession {
     mouse_mode: CoordinateMode,
+    #[cfg(unix)]
+    keyboard_disambiguation: bool,
 }
 
 impl TerminalSession {
     pub fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut output = io::stdout();
+        #[cfg(unix)]
+        let keyboard_disambiguation = crate::terminal_input::is_remote();
         if let Err(error) = execute!(
             output,
             EnterAlternateScreen,
@@ -77,9 +81,25 @@ impl TerminalSession {
             let _ = disable_raw_mode();
             return Err(error.into());
         }
+        #[cfg(unix)]
+        if keyboard_disambiguation {
+            use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+            if let Err(error) = execute!(
+                output,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            ) {
+                let _ = leave_terminal(&mut output);
+                let _ = disable_raw_mode();
+                return Err(error.into());
+            }
+        }
         output.flush()?;
         let mouse_mode = detect_mouse_mode(&mut output);
-        Ok(Self { mouse_mode })
+        Ok(Self {
+            mouse_mode,
+            #[cfg(unix)]
+            keyboard_disambiguation,
+        })
     }
 
     /// Mapper for the coordinate space this terminal actually reports.
@@ -91,6 +111,11 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let mut output = io::stdout();
+        #[cfg(unix)]
+        if self.keyboard_disambiguation {
+            use crossterm::event::PopKeyboardEnhancementFlags;
+            let _ = execute!(output, PopKeyboardEnhancementFlags);
+        }
         let _ = leave_terminal(&mut output);
         let _ = output.flush();
         let _ = disable_raw_mode();
