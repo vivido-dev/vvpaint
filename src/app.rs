@@ -38,6 +38,14 @@ struct State {
     message: String,
     format: ExportFormat,
     export_size: ExportSize,
+    /// Where `s` writes. The same path the post-loop save uses.
+    output: PathBuf,
+    /// Where `,`/`.` and `<`/`>` currently sit in `PALETTE`, indexed by [`ColorTarget`].
+    /// Kept rather than searched so cycling stays predictable after a typed hex colour.
+    palette_cursor: [usize; 2],
+    /// Last pointer position in canvas pixels, shown in the status line. With the grid pinned to
+    /// the client-area origin these are also the pane pixels to aim at.
+    pointer: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,18 +68,75 @@ enum ColorTarget {
     Secondary,
 }
 
+impl ColorTarget {
+    fn index(self) -> usize {
+        match self {
+            Self::Primary => 0,
+            Self::Secondary => 1,
+        }
+    }
+}
+
+/// Where `color` sits in `PALETTE`, or 0 when it was never a palette entry.
+fn palette_index_of(color: Rgba<u8>) -> usize {
+    PALETTE
+        .iter()
+        .position(|entry| entry.color == color)
+        .unwrap_or(0)
+}
+
 impl State {
-    fn new(canvas: &DrawingCanvas, format: ExportFormat, export_size: ExportSize) -> Self {
+    fn new(
+        canvas: &DrawingCanvas,
+        format: ExportFormat,
+        export_size: ExportSize,
+        output: PathBuf,
+    ) -> Self {
+        let primary = canvas.default_primary();
+        let secondary = canvas.default_secondary();
         Self {
             tool: Tool::Pencil,
             previous_tool: Tool::Pencil,
-            primary: canvas.default_primary(),
-            secondary: canvas.default_secondary(),
+            primary,
+            secondary,
             widths: [WidthPreset::Medium; Tool::COUNT],
             input: InputMode::None,
             message: "Ready".into(),
             format,
             export_size,
+            output,
+            palette_cursor: [palette_index_of(primary), palette_index_of(secondary)],
+            pointer: None,
+        }
+    }
+
+    fn swap_colors(&mut self) {
+        std::mem::swap(&mut self.primary, &mut self.secondary);
+        self.palette_cursor.swap(0, 1);
+        self.message = format!(
+            "Swapped · P {} S {}",
+            color_hex(self.primary),
+            color_hex(self.secondary)
+        );
+    }
+
+    /// Step `target` through `PALETTE`, wrapping in both directions.
+    fn cycle_palette(&mut self, target: ColorTarget, forward: bool) {
+        let slot = target.index();
+        let cursor = &mut self.palette_cursor[slot];
+        *cursor = if forward {
+            (*cursor + 1) % PALETTE.len()
+        } else {
+            (*cursor + PALETTE.len() - 1) % PALETTE.len()
+        };
+        let entry = PALETTE[*cursor];
+        self.set_color(target, entry.color, entry.name);
+    }
+
+    fn save(&mut self, canvas: &DrawingCanvas) {
+        match export::save(&self.output, self.format, self.export_size, canvas) {
+            Ok(()) => self.message = format!("Saved {}", self.output.display()),
+            Err(error) => self.message = format!("Save failed: {error}"),
         }
     }
 
@@ -261,7 +326,7 @@ pub fn run(args: Args) -> Result<()> {
     let handle = VividHandle::spawn(vivid::producer_config(), args.resolution_scale)?;
     let mut layout = handle.wait_ready()?;
     let mut canvas = DrawingCanvas::new(layout.backing_width, layout.backing_height, source, theme);
-    let mut state = State::new(&canvas, format, export_size);
+    let mut state = State::new(&canvas, format, export_size, output.clone());
     let terminal = TerminalSession::enter()?;
     handle.publish(canvas.render())?;
     handle.wait_presented()?;
@@ -320,6 +385,7 @@ fn event_loop(
             continue;
         }
         let mut redraw = false;
+        let mut redraw_ui = false;
         loop {
             match input.read()? {
                 TerminalEvent::Key(key)
@@ -332,8 +398,10 @@ fn event_loop(
                     redraw |= action.redraw;
                 }
                 TerminalEvent::Mouse(mouse) => {
-                    redraw |=
-                        handle_mouse(mouse, canvas, state, *layout, &mut mapper, &mut captured)
+                    let action =
+                        handle_mouse(mouse, canvas, state, *layout, &mut mapper, &mut captured);
+                    redraw |= action.redraw;
+                    redraw_ui |= action.redraw_ui;
                 }
                 TerminalEvent::Resize(_, _) => {}
                 _ => {}
@@ -344,6 +412,8 @@ fn event_loop(
         }
         if redraw {
             handle.publish(canvas.render())?;
+        }
+        if redraw || redraw_ui {
             render_ui(&mut output, state, canvas, *layout, false)?;
         }
     }
@@ -445,11 +515,46 @@ fn handle_key(key: KeyEvent, canvas: &mut DrawingCanvas, state: &mut State) -> K
                 };
             }
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Char('q') => {
                     return KeyAction {
                         quit: true,
                         redraw: false,
                     };
+                }
+                // Esc cancels the shape in progress. Quitting is `q` or Ctrl-C, so a half-drawn
+                // rectangle no longer costs the whole session.
+                KeyCode::Esc => {
+                    canvas.cancel();
+                }
+                KeyCode::Char('s') => {
+                    state.save(canvas);
+                }
+                KeyCode::Char('g') => {
+                    state.message = geometry_text(canvas);
+                }
+                KeyCode::Char('x') => {
+                    state.swap_colors();
+                }
+                KeyCode::Char('1') => {
+                    state.set_width(WidthPreset::Small);
+                }
+                KeyCode::Char('2') => {
+                    state.set_width(WidthPreset::Medium);
+                }
+                KeyCode::Char('3') => {
+                    state.set_width(WidthPreset::Large);
+                }
+                KeyCode::Char(',') => {
+                    state.cycle_palette(ColorTarget::Primary, false);
+                }
+                KeyCode::Char('.') => {
+                    state.cycle_palette(ColorTarget::Primary, true);
+                }
+                KeyCode::Char('<') => {
+                    state.cycle_palette(ColorTarget::Secondary, false);
+                }
+                KeyCode::Char('>') => {
+                    state.cycle_palette(ColorTarget::Secondary, true);
                 }
                 KeyCode::Char('z') => {
                     canvas.undo();
@@ -494,13 +599,37 @@ fn handle_key(key: KeyEvent, canvas: &mut DrawingCanvas, state: &mut State) -> K
                     };
                     state.message = "Enter secondary color".into();
                 }
-                _ => {}
+                // An unhandled key changes nothing, so it must not republish a raster frame.
+                _ => {
+                    return KeyAction::default();
+                }
             }
         }
     }
     KeyAction {
         quit: false,
         redraw: true,
+    }
+}
+
+/// What a mouse event asks the loop to refresh.
+///
+/// Pointer motion changes only the status readout. Publishing a raster frame for it would push a
+/// full Vivid frame per mouse move, so the two are tracked separately.
+#[derive(Debug, Default, Clone, Copy)]
+struct MouseAction {
+    /// The drawing changed; republish the canvas.
+    redraw: bool,
+    /// Only the toolbar or status line changed.
+    redraw_ui: bool,
+}
+
+impl MouseAction {
+    fn draw(redraw: bool) -> Self {
+        Self {
+            redraw,
+            redraw_ui: false,
+        }
     }
 }
 
@@ -511,11 +640,12 @@ fn handle_mouse(
     layout: Layout,
     mapper: &mut MouseMapper,
     captured: &mut Option<MouseButton>,
-) -> bool {
+) -> MouseAction {
     if !matches!(state.input, InputMode::None) {
-        return false;
+        return MouseAction::default();
     }
-    match mouse.kind {
+    let moved = track_pointer(mouse, canvas, state, layout, mapper, captured.is_some());
+    let mut action = match mouse.kind {
         MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right)) => {
             match mapper.target(mouse, layout, false) {
                 MouseTarget::Canvas(point) => {
@@ -548,30 +678,59 @@ fn handle_mouse(
                             canvas.begin(state.tool, point, state.style(button));
                         }
                     }
-                    true
+                    MouseAction::draw(true)
                 }
-                MouseTarget::Ui { row, column } => {
-                    handle_toolbar_click(row, column, button, canvas, state, layout.columns)
-                }
-                MouseTarget::None => false,
+                MouseTarget::Ui { row, column } => MouseAction::draw(handle_toolbar_click(
+                    row,
+                    column,
+                    button,
+                    canvas,
+                    state,
+                    layout.columns,
+                )),
+                MouseTarget::None => MouseAction::default(),
             }
         }
-        MouseEventKind::Drag(button) if *captured == Some(button) => {
+        MouseEventKind::Drag(button) if *captured == Some(button) => MouseAction::draw(
             if let MouseTarget::Canvas(point) = mapper.target(mouse, layout, true) {
                 canvas.extend(point)
             } else {
                 false
-            }
-        }
+            },
+        ),
         MouseEventKind::Up(button) if *captured == Some(button) => {
             if let MouseTarget::Canvas(point) = mapper.target(mouse, layout, true) {
                 canvas.extend(point);
             }
             *captured = None;
-            canvas.finish()
+            MouseAction::draw(canvas.finish())
         }
-        _ => false,
-    }
+        _ => MouseAction::default(),
+    };
+    action.redraw_ui |= moved;
+    action
+}
+
+/// Record the pointer position for the status readout. Returns whether it changed.
+fn track_pointer(
+    mouse: MouseEvent,
+    canvas: &DrawingCanvas,
+    state: &mut State,
+    layout: Layout,
+    mapper: &mut MouseMapper,
+    captured: bool,
+) -> bool {
+    let MouseTarget::Canvas(point) = mapper.target(mouse, layout, captured) else {
+        return state.pointer.take().is_some();
+    };
+    let (width, height) = canvas.dimensions();
+    let next = Some((
+        ((point.x * width as f32) as u32).min(width.saturating_sub(1)),
+        ((point.y * height as f32) as u32).min(height.saturating_sub(1)),
+    ));
+    let changed = state.pointer != next;
+    state.pointer = next;
+    changed
 }
 
 fn render_ui<W: Write>(
@@ -829,6 +988,26 @@ fn write_toolbar_row<W: Write>(
     Ok(())
 }
 
+/// Everything needed to turn a pixel of the source image into a canvas pixel, in one line that
+/// can be read back with a terminal text query. The base image is letterboxed inside the canvas,
+/// so its offset and drawn size are not derivable from the canvas size alone.
+///
+/// To aim at image pixel `(ix, iy)`: `x = fx + ix * fw / iw`, `y = fy + iy * fh / ih`. The grid is
+/// pinned to the client-area origin, so that canvas pixel is also the pane pixel.
+fn geometry_text(canvas: &DrawingCanvas) -> String {
+    let (width, height) = canvas.dimensions();
+    let fit = canvas.fit();
+    let scale = |value: f32, span: u32| (value * span as f32).round() as u32;
+    let (x, y) = (scale(fit.x, width), scale(fit.y, height));
+    let (fit_width, fit_height) = (scale(fit.width, width), scale(fit.height, height));
+    match canvas.source_dimensions() {
+        Some((source_width, source_height)) => format!(
+            "canvas {width}x{height} · image {source_width}x{source_height} drawn at {x},{y} size {fit_width}x{fit_height}"
+        ),
+        None => format!("canvas {width}x{height} · no base image"),
+    }
+}
+
 fn message_text(state: &State, canvas: &DrawingCanvas) -> String {
     match &state.input {
         InputMode::Color { target, buffer } => format!(
@@ -843,14 +1022,21 @@ fn message_text(state: &State, canvas: &DrawingCanvas) -> String {
             } else {
                 String::new()
             };
+            // The pointer readout is the cheapest way for a caller driving vvpaint from outside to
+            // confirm where it is aiming: move, read this line back, then commit the stroke.
+            let pointer = match state.pointer {
+                Some((x, y)) => format!(" @ {x},{y}"),
+                None => String::new(),
+            };
             format!(
-                "{}{} · P {} S {} · {}x{} · {} {} · {} · {}",
+                "{}{} · P {} S {} · {}x{}{} · {} {} · {} · {}",
                 tool_label(state.tool),
                 tool_width,
                 color_hex(state.primary),
                 color_hex(state.secondary),
                 width,
                 height,
+                pointer,
                 state.format,
                 state.export_size,
                 if canvas.is_dirty() {
@@ -998,12 +1184,19 @@ fn width_tile(width: WidthPreset, tile_width: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::CoordinateMode;
     use crate::theme::Theme;
     use ab_glyph::{Font, FontRef};
+    use image::DynamicImage;
 
     fn state() -> (DrawingCanvas, State) {
         let canvas = DrawingCanvas::blank(100, 50, Theme::Light);
-        let state = State::new(&canvas, ExportFormat::Png, ExportSize::Canvas);
+        let state = State::new(
+            &canvas,
+            ExportFormat::Png,
+            ExportSize::Canvas,
+            "out.png".into(),
+        );
         (canvas, state)
     }
 
@@ -1099,6 +1292,142 @@ mod tests {
             &mut canvas,
             &mut state,
         );
+    }
+
+    fn press(canvas: &mut DrawingCanvas, state: &mut State, code: KeyCode) -> KeyAction {
+        handle_key(KeyEvent::new(code, KeyModifiers::NONE), canvas, state)
+    }
+
+    #[test]
+    fn digits_select_width_directly() {
+        let (mut canvas, mut state) = state();
+        state.set_tool(Tool::Brush);
+        press(&mut canvas, &mut state, KeyCode::Char('3'));
+        assert_eq!(state.width(), WidthPreset::Large);
+        press(&mut canvas, &mut state, KeyCode::Char('1'));
+        assert_eq!(state.width(), WidthPreset::Small);
+        press(&mut canvas, &mut state, KeyCode::Char('2'));
+        assert_eq!(state.width(), WidthPreset::Medium);
+    }
+
+    #[test]
+    fn text_can_finally_change_size() {
+        // Text scales with the width preset but was excluded from `supports_width`, pinning every
+        // label to medium with no input able to change it.
+        assert!(Tool::Text.supports_width());
+        let (mut canvas, mut state) = state();
+        state.set_tool(Tool::Text);
+        press(&mut canvas, &mut state, KeyCode::Char('3'));
+        assert_eq!(state.width(), WidthPreset::Large);
+    }
+
+    #[test]
+    fn x_swaps_the_two_colors() {
+        let (mut canvas, mut state) = state();
+        state.set_color(ColorTarget::Primary, Rgba([1, 2, 3, 255]), "a");
+        state.set_color(ColorTarget::Secondary, Rgba([4, 5, 6, 255]), "b");
+        press(&mut canvas, &mut state, KeyCode::Char('x'));
+        assert_eq!(state.primary, Rgba([4, 5, 6, 255]));
+        assert_eq!(state.secondary, Rgba([1, 2, 3, 255]));
+    }
+
+    #[test]
+    fn palette_cycles_both_ways_and_wraps() {
+        let (mut canvas, mut state) = state();
+        state.palette_cursor = [0, 0];
+
+        press(&mut canvas, &mut state, KeyCode::Char('.'));
+        assert_eq!(state.primary, PALETTE[1].color);
+        press(&mut canvas, &mut state, KeyCode::Char(','));
+        assert_eq!(state.primary, PALETTE[0].color);
+        // Wrapping backwards off the start lands on the last entry.
+        press(&mut canvas, &mut state, KeyCode::Char(','));
+        assert_eq!(state.primary, PALETTE[PALETTE.len() - 1].color);
+
+        // The shifted pair drives the secondary colour and leaves the primary alone.
+        let primary = state.primary;
+        press(&mut canvas, &mut state, KeyCode::Char('>'));
+        assert_eq!(state.secondary, PALETTE[1].color);
+        assert_eq!(state.primary, primary);
+    }
+
+    #[test]
+    fn esc_cancels_the_shape_instead_of_quitting() {
+        let (mut canvas, mut state) = state();
+        state.set_tool(Tool::Rectangle);
+        canvas.begin(
+            Tool::Rectangle,
+            Point::new(0.1, 0.1),
+            state.style(MouseButton::Left),
+        );
+        canvas.extend(Point::new(0.5, 0.5));
+
+        let action = press(&mut canvas, &mut state, KeyCode::Esc);
+        assert!(!action.quit, "Esc must no longer quit");
+        assert!(
+            !canvas.is_dirty(),
+            "the in-progress shape must be discarded"
+        );
+
+        assert!(press(&mut canvas, &mut state, KeyCode::Char('q')).quit);
+    }
+
+    #[test]
+    fn an_unhandled_key_does_not_request_a_redraw() {
+        // Every stray keystroke used to republish a whole raster frame.
+        let (mut canvas, mut state) = state();
+        let action = press(&mut canvas, &mut state, KeyCode::Char('§'));
+        assert!(!action.redraw);
+        assert!(!action.quit);
+    }
+
+    #[test]
+    fn geometry_reports_where_the_image_sits_in_the_canvas() {
+        // Blank canvas: the drawing surface is the whole canvas, and there is no base image.
+        let (blank, _) = state();
+        let text = geometry_text(&blank);
+        assert!(text.contains("canvas 100x50"), "{text}");
+        assert!(text.contains("no base image"), "{text}");
+
+        // With a square image in a wide canvas the image is letterboxed, so its offset and drawn
+        // size cannot be derived from the canvas size — which is the whole reason to report them.
+        let source = BaseSource::Image(DynamicImage::new_rgba8(64, 64));
+        let canvas = DrawingCanvas::new(200, 100, source, Theme::Light);
+        let text = geometry_text(&canvas);
+        assert!(text.contains("canvas 200x100"), "{text}");
+        assert!(text.contains("image 64x64"), "{text}");
+        // 64x64 fit into 200x100 scales to 100x100, centred horizontally at x = 50.
+        assert!(text.contains("drawn at 50,0 size 100x100"), "{text}");
+    }
+
+    #[test]
+    fn pointer_motion_updates_the_readout_without_redrawing_the_canvas() {
+        let (mut canvas, mut state) = state();
+        let layout = layout();
+        let mut mapper = MouseMapper::new(CoordinateMode::Pixel);
+        let mut captured = None;
+
+        let action = handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 40,
+                row: 30,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut canvas,
+            &mut state,
+            layout,
+            &mut mapper,
+            &mut captured,
+        );
+
+        assert!(state.pointer.is_some(), "motion must record the pointer");
+        assert!(action.redraw_ui, "the status line has to refresh");
+        assert!(
+            !action.redraw,
+            "motion alone must not republish a raster frame"
+        );
+        assert!(message_text(&state, &canvas).contains(" @ "));
     }
 
     #[test]
