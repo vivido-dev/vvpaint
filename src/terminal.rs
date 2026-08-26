@@ -59,12 +59,16 @@ impl Layout {
 
 pub struct TerminalSession {
     mouse_mode: CoordinateMode,
+    #[cfg(unix)]
+    keyboard_disambiguation: bool,
 }
 
 impl TerminalSession {
     pub fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut output = io::stdout();
+        #[cfg(unix)]
+        let keyboard_disambiguation = crate::terminal_input::is_remote();
         if let Err(error) = execute!(
             output,
             EnterAlternateScreen,
@@ -77,9 +81,25 @@ impl TerminalSession {
             let _ = disable_raw_mode();
             return Err(error.into());
         }
+        #[cfg(unix)]
+        if keyboard_disambiguation {
+            use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+            if let Err(error) = execute!(
+                output,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            ) {
+                let _ = leave_terminal(&mut output);
+                let _ = disable_raw_mode();
+                return Err(error.into());
+            }
+        }
         output.flush()?;
         let mouse_mode = detect_mouse_mode(&mut output);
-        Ok(Self { mouse_mode })
+        Ok(Self {
+            mouse_mode,
+            #[cfg(unix)]
+            keyboard_disambiguation,
+        })
     }
 
     /// Mapper for the coordinate space this terminal actually reports.
@@ -91,6 +111,11 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let mut output = io::stdout();
+        #[cfg(unix)]
+        if self.keyboard_disambiguation {
+            use crossterm::event::PopKeyboardEnhancementFlags;
+            let _ = execute!(output, PopKeyboardEnhancementFlags);
+        }
         let _ = leave_terminal(&mut output);
         let _ = output.flush();
         let _ = disable_raw_mode();
@@ -111,7 +136,7 @@ fn restore_primary_screen(output: &mut impl Write) -> io::Result<()> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CoordinateMode {
+pub(crate) enum CoordinateMode {
     Pixel,
     Cell,
 }
@@ -129,7 +154,7 @@ pub struct MouseMapper {
 }
 
 impl MouseMapper {
-    fn new(mode: CoordinateMode) -> Self {
+    pub(crate) fn new(mode: CoordinateMode) -> Self {
         Self { mode }
     }
 
@@ -385,6 +410,83 @@ mod tests {
         assert_eq!(
             mapper.target(event, layout(), true),
             MouseTarget::Canvas(Point::new(0.99375, 0.97619045))
+        );
+    }
+
+    /// The layout `vivid::layout` actually produces for a real pane, complete with the sub-cell
+    /// slack Vivido leaves at the bottom: 1938x1138 viewport, 15x34 cells, 33 rows, 30 canvas
+    /// rows. Centring the grid here put `grid_origin_y` at 8 and every stroke 8px high.
+    fn pane_layout() -> Layout {
+        Layout {
+            columns: 129,
+            rows: 33,
+            canvas_rows: 30,
+            viewport_width: 1938,
+            viewport_height: 1138,
+            grid_origin_x: 0,
+            grid_origin_y: 0,
+            cell_width: 15,
+            cell_height: 34,
+            backing_width: 1935,
+            backing_height: 1020,
+        }
+    }
+
+    fn pixel_event(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn pixel_aim_lands_on_the_pixel_that_was_aimed_at() {
+        let mut mapper = MouseMapper {
+            mode: CoordinateMode::Pixel,
+        };
+        let layout = pane_layout();
+        // A pane pixel must address the canvas pixel underneath it. Vivido reports raw
+        // client-area pixels and draws the grid from the client-area origin, so the two spaces
+        // share an origin and the mapping is the identity.
+        for y in [0_u16, 100, 500, 1019] {
+            let MouseTarget::Canvas(point) = mapper.target(pixel_event(600, y), layout, false)
+            else {
+                panic!("pane pixel y={y} did not resolve to the canvas");
+            };
+            let landed = (point.y * layout.backing_height as f32).round() as u16;
+            assert_eq!(landed, y, "aimed at y={y}, landed at y={landed}");
+        }
+    }
+
+    #[test]
+    fn a_nonzero_grid_origin_still_shifts_the_aim() {
+        // Guards the seam rather than the current value: if a future descriptor publishes a real
+        // padding and `vivid::layout` starts using it, this is the behaviour it has to produce.
+        let mut mapper = MouseMapper {
+            mode: CoordinateMode::Pixel,
+        };
+        let layout = Layout {
+            grid_origin_y: 8,
+            ..pane_layout()
+        };
+        let MouseTarget::Canvas(point) = mapper.target(pixel_event(600, 108), layout, false) else {
+            panic!("pane pixel did not resolve to the canvas");
+        };
+        assert_eq!((point.y * layout.backing_height as f32).round() as u16, 100);
+    }
+
+    #[test]
+    fn toolbar_rows_resolve_below_the_canvas() {
+        let mut mapper = MouseMapper {
+            mode: CoordinateMode::Pixel,
+        };
+        let layout = pane_layout();
+        // First toolbar row starts immediately after the 30 canvas rows: y = 30 * 34 = 1020.
+        assert_eq!(
+            mapper.target(pixel_event(30, 1020), layout, false),
+            MouseTarget::Ui { row: 0, column: 2 }
         );
     }
 

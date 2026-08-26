@@ -612,6 +612,54 @@ fn layout(session: &Session, scale: f32) -> io::Result<Layout> {
             "terminal target is not settled",
         ));
     }
+    let contract = &session.info().resource_contract;
+    let pixel_limit = contract
+        .get(Resource::CodedPixelsPerTrack)
+        .min(contract.get(Resource::RetainedPixels));
+    let body_limit = contract.get(Resource::MediaRecordBody);
+    layout_for(
+        TargetGeometry {
+            viewport_width,
+            viewport_height,
+            columns,
+            rows,
+            cell_width,
+            cell_height,
+        },
+        scale,
+        pixel_limit,
+        body_limit,
+    )
+}
+
+/// The six geometry values a terminal target descriptor publishes.
+#[derive(Debug, Clone, Copy)]
+struct TargetGeometry {
+    viewport_width: u32,
+    viewport_height: u32,
+    columns: u32,
+    rows: u32,
+    cell_width: u32,
+    cell_height: u32,
+}
+
+/// Turn published target geometry into a [`Layout`]. Split out of [`layout`] so the pixel maths
+/// can be tested without a live session; the descriptor parsing above has no geometry decisions
+/// left in it.
+fn layout_for(
+    geometry: TargetGeometry,
+    scale: f32,
+    pixel_limit: u64,
+    body_limit: u64,
+) -> io::Result<Layout> {
+    let TargetGeometry {
+        viewport_width,
+        viewport_height,
+        columns,
+        rows,
+        cell_width,
+        cell_height,
+    } = geometry;
     if columns == 0 || rows == 0 || cell_width == 0 || cell_height == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -637,11 +685,6 @@ fn layout(session: &Session, scale: f32) -> io::Result<Layout> {
         .min(grid_height);
     let desired_width = (physical_width as f64 * f64::from(scale)).round().max(1.0) as u32;
     let desired_height = (physical_height as f64 * f64::from(scale)).round().max(1.0) as u32;
-    let contract = &session.info().resource_contract;
-    let pixel_limit = contract
-        .get(Resource::CodedPixelsPerTrack)
-        .min(contract.get(Resource::RetainedPixels));
-    let body_limit = contract.get(Resource::MediaRecordBody);
     let (backing_width, backing_height) =
         bounded_backing(desired_width, desired_height, body_limit, pixel_limit)?;
     Ok(Layout {
@@ -650,8 +693,14 @@ fn layout(session: &Session, scale: f32) -> io::Result<Layout> {
         canvas_rows,
         viewport_width,
         viewport_height,
-        grid_origin_x: viewport_width.saturating_sub(grid_width) / 2,
-        grid_origin_y: viewport_height.saturating_sub(grid_height) / 2,
+        // Vivido pins the terminal grid to the client-area origin. Its `dynamic_padding` option
+        // defaults to false, so sub-cell slack collects at the right and bottom edges instead of
+        // being split evenly, and the base padding defaults to zero. Centring the grid here made
+        // every canvas point land `grid_origin_y` pixels above the pointer. The target descriptor
+        // does not publish padding, so there is nothing better to derive this from; keep the
+        // fields as the seam for the day it does.
+        grid_origin_x: 0,
+        grid_origin_y: 0,
         cell_width,
         cell_height,
         backing_width,
@@ -987,6 +1036,51 @@ mod tests {
     use super::*;
     use vivid_protocol::auth::Secret32;
     use vivid_sdk::testing::{ROOT_SECRET_HEX, TestPresenter};
+
+    /// The regression this file's grid-origin comment exists for.
+    ///
+    /// A real pane: 1938x1138 viewport, 129x33 cells of 15x34. The grid is 129*15 = 1935 wide and
+    /// 33*34 = 1122 tall, so 3px of horizontal and 16px of vertical slack. Centring that slack put
+    /// the origin at (1, 8) and shifted every stroke 8px up the canvas. Vivido leaves the slack at
+    /// the right and bottom instead, so the origin is (0, 0).
+    #[test]
+    fn grid_origin_is_the_client_area_origin_not_the_centre() {
+        let layout = layout_for(
+            TargetGeometry {
+                viewport_width: 1938,
+                viewport_height: 1138,
+                columns: 129,
+                rows: 33,
+                cell_width: 15,
+                cell_height: 34,
+            },
+            1.0,
+            u64::MAX,
+            u64::MAX,
+        )
+        .expect("real pane geometry is valid");
+
+        assert_eq!(
+            (layout.grid_origin_x, layout.grid_origin_y),
+            (0, 0),
+            "slack must not be split; Vivido pins the grid to the client-area origin"
+        );
+        assert_eq!(layout.canvas_rows, 30);
+        assert_eq!((layout.backing_width, layout.backing_height), (1935, 1020));
+    }
+
+    #[test]
+    fn zero_geometry_is_rejected() {
+        let geometry = TargetGeometry {
+            viewport_width: 800,
+            viewport_height: 480,
+            columns: 0,
+            rows: 24,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        assert!(layout_for(geometry, 1.0, u64::MAX, u64::MAX).is_err());
+    }
 
     #[test]
     fn damage_bounds_and_extract_are_exact() {

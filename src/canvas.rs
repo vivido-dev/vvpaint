@@ -81,6 +81,9 @@ impl Tool {
         matches!(
             self,
             Self::Eraser
+                // Text scales with the width preset in `RenderSizing::text_size`, so excluding it
+                // here pinned every label to medium with no way to change it.
+                | Self::Text
                 | Self::Brush
                 | Self::Airbrush
                 | Self::Line
@@ -229,12 +232,15 @@ enum Operation {
     ClearAnnotations,
 }
 
+/// Where the base image sits inside the canvas, in normalized canvas coordinates. A canvas is
+/// usually wider than the image it holds, so the image is letterboxed and this is the only way to
+/// convert a feature in the source image into a canvas pixel.
 #[derive(Debug, Clone, Copy)]
-struct FitRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+pub struct FitRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 impl FitRect {
@@ -469,6 +475,20 @@ impl DrawingCanvas {
 
     pub fn is_dirty(&self) -> bool {
         self.cursor != 0
+    }
+
+    /// Where the base image sits inside the canvas. Reported so a caller can aim at a feature of
+    /// the source image without measuring a screenshot.
+    pub fn fit(&self) -> FitRect {
+        self.fit
+    }
+
+    /// Pixel size of the base image, when one was loaded.
+    pub fn source_dimensions(&self) -> Option<(u32, u32)> {
+        match &self.source {
+            BaseSource::Blank => None,
+            BaseSource::Image(image) => Some((image.width(), image.height())),
+        }
     }
 
     pub fn color_at(&self, point: Point) -> Rgba<u8> {
