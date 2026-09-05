@@ -882,6 +882,7 @@ fn raster_configuration(
 ) -> io::Result<TrackConfiguration> {
     let body = media::rgba8_raw_frame_body_len(width, height).map_err(io::Error::other)?;
     Ok(TrackConfiguration {
+        direction: Default::default(),
         context_id: surface.context_id(),
         surface_id: surface.id(),
         track_id,
