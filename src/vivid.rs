@@ -971,8 +971,10 @@ fn damage_rect(previous: &[u8], current: &[u8], width: u32, height: u32) -> Opti
     let mut bounds = (width, height, 0, 0);
     let mut changed = false;
     for (index, (before, after)) in previous
-        .chunks_exact(4)
-        .zip(current.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(current.as_chunks::<4>().0.iter())
         .enumerate()
     {
         if before != after {
