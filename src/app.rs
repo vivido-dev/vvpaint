@@ -1130,18 +1130,19 @@ fn tool_label(tool: Tool) -> &'static str {
 
 fn tool_icon(tool: Tool) -> &'static str {
     match tool {
-        Tool::Eraser => "\u{1f9fc}",           // soap
-        Tool::Fill => "\u{1faa3}",             // bucket
-        Tool::Picker => "\u{1f9ea}",           // test tube
-        Tool::Pencil => "\u{270f}",            // pencil
-        Tool::Brush => "\u{1f58c}",            // paintbrush
-        Tool::Airbrush => "\u{1f4a8}",         // dashing away
-        Tool::Text => "\u{1f524}",             // input Latin letters
-        Tool::Line => "\u{1f4cf}",             // straight ruler
-        Tool::Rectangle => "\u{f0e5f}",        // Material Design rectangle-outline
-        Tool::Ellipse => "\u{f0ea1}",          // Material Design ellipse-outline
-        Tool::RoundedRectangle => "\u{f14fc}", // Material Design square-rounded-outline
-        Tool::Highlighter => "\u{1f58d}",      // crayon
+        Tool::Eraser => "\u{1f9fc}",   // soap
+        Tool::Fill => "\u{1faa3}",     // bucket
+        Tool::Picker => "\u{1f9ea}",   // test tube
+        Tool::Pencil => "\u{270f}",    // pencil
+        Tool::Brush => "\u{1f58c}",    // paintbrush
+        Tool::Airbrush => "\u{1f4a8}", // dashing away
+        Tool::Text => "\u{1f524}",     // input Latin letters
+        Tool::Line => "\u{1f4cf}",     // straight ruler
+        // Standard symbols covered by the toolbar font, without a private-use icon font.
+        Tool::Rectangle => "\u{25ad}",        // white rectangle
+        Tool::Ellipse => "\u{25ef}",          // large circle
+        Tool::RoundedRectangle => "\u{25a2}", // white square with rounded corners
+        Tool::Highlighter => "\u{1f58d}",     // crayon
     }
 }
 
@@ -1237,13 +1238,8 @@ mod tests {
                 1,
                 "{tool:?} must have one base glyph"
             );
-            if !matches!(
-                tool,
-                Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle
-            ) {
-                for character in icon.chars() {
-                    assert_ne!(font.glyph_id(character).0, 0, "{tool:?} glyph is absent");
-                }
+            for character in icon.chars() {
+                assert_ne!(font.glyph_id(character).0, 0, "{tool:?} glyph is absent");
             }
             for width in [2, 3] {
                 let padding = width - tool_icon_width(tool);
@@ -1256,12 +1252,12 @@ mod tests {
         }
 
         assert_eq!(tool_icon(Tool::Line), "\u{1f4cf}");
-        assert_eq!(tool_icon(Tool::Rectangle), "\u{f0e5f}");
-        assert_eq!(tool_icon(Tool::Ellipse), "\u{f0ea1}");
-        assert_eq!(tool_icon(Tool::RoundedRectangle), "\u{f14fc}");
-        assert_eq!(tool_tile(Tool::Rectangle, 4), " \u{f0e5f}  ");
-        assert_eq!(tool_tile(Tool::Ellipse, 4), " \u{f0ea1}  ");
-        assert_eq!(tool_tile(Tool::RoundedRectangle, 4), " \u{f14fc}  ");
+        assert_eq!(tool_icon(Tool::Rectangle), "\u{25ad}");
+        assert_eq!(tool_icon(Tool::Ellipse), "\u{25ef}");
+        assert_eq!(tool_icon(Tool::RoundedRectangle), "\u{25a2}");
+        assert_eq!(tool_tile(Tool::Rectangle, 4), " \u{25ad}  ");
+        assert_eq!(tool_tile(Tool::Ellipse, 4), " \u{25ef}  ");
+        assert_eq!(tool_tile(Tool::RoundedRectangle, 4), " \u{25a2}  ");
 
         assert_eq!(width_icon(WidthPreset::Small), "S");
         assert_eq!(width_icon(WidthPreset::Medium), "M");
