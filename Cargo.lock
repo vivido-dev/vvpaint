@@ -1499,7 +1499,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivid_protocol"
-version = "1.5.9"
+version = "1.5.10"
 dependencies = [
  "base64",
  "hmac",
@@ -1513,9 +1513,8 @@ dependencies = [
 
 [[package]]
 name = "vivid_sdk"
-version = "1.5.8"
+version = "1.5.9"
 dependencies = [
- "crossterm",
  "getrandom 0.4.3",
  "log",
  "serde",
