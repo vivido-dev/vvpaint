@@ -2,7 +2,7 @@
 name = "vvpaint"
 version = "0.1.3"
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.95.0"
 license = "Apache-2.0"
 description = "A lightweight Vivid 1.5 paint and annotation producer"
 
